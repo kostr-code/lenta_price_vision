@@ -33,4 +33,4 @@ WORKDIR /app/packages/ml
 
 EXPOSE 8000
 
-CMD ["uv", "run", "uvicorn", "ml.main:app", "--host", "localhost", "--port", "8000"]
+CMD ["uv", "run", "uvicorn", "ml.main:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -28,4 +28,4 @@ WORKDIR /app/packages/mock_store_api
 
 EXPOSE 8002
 
-CMD ["uv", "run", "uvicorn", "mock_store_api.main:app", "--host", "localhost", "--port", "8002"]
+CMD ["uv", "run", "uvicorn", "mock_store_api.main:app", "--host", "0.0.0.0", "--port", "8002"]
