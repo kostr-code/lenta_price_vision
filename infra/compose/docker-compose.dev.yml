@@ -1,0 +1,65 @@
+services:
+  backend:
+    volumes:
+      - ./packages/backend/src:/app/packages/backend/src
+      - ./packages/backend/migrations:/app/packages/backend/migrations
+      - ./data:/app/data
+    environment:
+      APP_ENV: dev
+      LOG_LEVEL: DEBUG
+      AUTO_CREATE_TABLES: "1"
+    command:
+      [
+        "uv",
+        "run",
+        "uvicorn",
+        "backend.main:app",
+        "--host",
+        "localhost",
+        "--port",
+        "8001",
+        "--reload"
+      ]
+
+  ml:
+    volumes:
+      - ./packages/ml/src:/app/packages/ml/src
+      - ./models:/app/models
+      - ./data:/app/data
+    environment:
+      APP_ENV: dev
+      LOG_LEVEL: DEBUG
+      ML_DEVICE: cpu
+      ML_ENABLE_STUB: "1"
+    command:
+      [
+        "uv",
+        "run",
+        "uvicorn",
+        "ml.main:app",
+        "--host",
+        "localhost",
+        "--port",
+        "8000",
+        "--reload"
+      ]
+
+  mock-store-api:
+    volumes:
+      - ./packages/mock_store_api/src:/app/packages/mock_store_api/src
+      - ./data:/app/data
+    environment:
+      APP_ENV: dev
+      LOG_LEVEL: DEBUG
+    command:
+      [
+        "uv",
+        "run",
+        "uvicorn",
+        "mock_store_api.main:app",
+        "--host",
+        "localhost",
+        "--port",
+        "8002",
+        "--reload"
+      ]

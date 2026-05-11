@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  lint-build-smoke:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Sync backend/frontend
+        run: uv sync
+
+      - name: Lint backend/frontend
+        run: uv run ruff check .
+
+      - name: Sync ML
+        run: cd packages/ml && uv sync
+
+      - name: Lint ML
+        run: cd packages/ml && uv run ruff check .
+
+      - name: Build containers
+        run: docker compose build
+
+      - name: Start services
+        run: docker compose up -d
+
+      - name: Smoke test
+        run: |
+          sleep 15
+          bash scripts/smoke_test.sh
+
+      - name: Show logs on failure
+        if: failure()
+        run: docker compose logs
