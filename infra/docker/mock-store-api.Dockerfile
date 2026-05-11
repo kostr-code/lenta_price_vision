@@ -5,6 +5,7 @@ WORKDIR /app
 RUN pip install uv
 
 COPY packages/mock_store_api ./packages/mock_store_api
+COPY packages/mock_store_api ./packages/mock_store_api
 
 WORKDIR /app/packages/mock_store_api
 
