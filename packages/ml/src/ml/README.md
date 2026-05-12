@@ -22,7 +22,7 @@ ml/
     25_12-20/          # public-разметка: mp4 + csv
     26_12-20/          # public-разметка: mp4 + csv
     43_15/             # public-разметка: mp4 + csv
-    Unlabeled/         # видео без разметки для inference/self-training
+    Unlabeled/         # локальные видео без разметки для inference/self-training
 
   runs/                # создается при запуске: CSV, debug JSON, датасеты, результаты eval
 ```
@@ -110,6 +110,103 @@ POST /train/yolo         запустить обучение YOLO через ult
 http://localhost:8000/docs
 ```
 
+## Где лежат модели
+
+Рекомендуемое место для обученного YOLO-детектора:
+
+```text
+models/price_tag_yolo.pt
+```
+
+Это путь от корня репозитория:
+
+```text
+F:/lenta_price_vision/models/price_tag_yolo.pt
+```
+
+Такой файл игнорируется git-ом, потому что веса большие и должны храниться отдельно от кода.
+
+Пайплайн ищет веса автоматически в двух местах:
+
+```text
+<текущая рабочая папка>/models/price_tag_yolo.pt
+<корень репозитория>/models/price_tag_yolo.pt
+```
+
+Надежнее всего явно передавать путь в запросе:
+
+```json
+{
+  "yolo_weights": "F:/lenta_price_vision/models/price_tag_yolo.pt"
+}
+```
+
+Также можно указать путь через переменную окружения:
+
+```powershell
+$env:ML_YOLO_WEIGHTS="F:/lenta_price_vision/models/price_tag_yolo.pt"
+uv run ml-service
+```
+
+Если веса лежат в другом месте, это нормально: просто передайте полный путь в `yolo_weights`.
+
+## Где лежат данные
+
+Для public-разметки ожидается структура:
+
+```text
+packages/ml/src/ml/data/
+  25_12-20/
+    25_12-20.mp4
+    25_12-20.csv
+  26_12-20/
+    26_12-20.mp4
+    26_12-20.csv
+  43_15/
+    43_15.mp4
+    43_15.csv
+```
+
+Эти папки используются для:
+
+```text
+GET  /datasets
+POST /evaluate/public
+POST /dataset/yolo
+```
+
+Видео без разметки для обычного инференса удобно класть сюда:
+
+```text
+packages/ml/src/ml/data/Unlabeled/
+```
+
+Например:
+
+```text
+packages/ml/src/ml/data/Unlabeled/26_2-10.mp4
+```
+
+Для `POST /predict/path` видео может лежать где угодно на машине. Главное — передать полный путь:
+
+```json
+{
+  "video_path": "F:/lenta_price_vision/packages/ml/src/ml/data/Unlabeled/26_2-10.mp4"
+}
+```
+
+Для `POST /predict/video` путь не нужен: файл загружается через Swagger/API и сохраняется во временную папку запуска.
+
+Результаты инференса пишутся сюда:
+
+```text
+packages/ml/src/ml/runs/<run_id>/
+  *_recognized.csv
+  *_debug.json
+```
+
+Папка `runs/` игнорируется git-ом.
+
 ## Инференс по локальному видео
 
 Пример через Python-клиент или Swagger `POST /predict/path`:
@@ -117,10 +214,11 @@ http://localhost:8000/docs
 ```json
 {
   "video_path": "F:/lenta_price_vision/packages/ml/src/ml/data/Unlabeled/26_2-10.mp4",
-  "mode": "fast",
-  "sample_fps": 1.0,
-  "max_frames": 30,
-  "enable_ocr": false,
+  "mode": "accurate",
+  "sample_fps": 2.0,
+  "max_frames": 0,
+  "yolo_weights": "F:/lenta_price_vision/models/price_tag_yolo.pt",
+  "enable_ocr": true,
   "enable_qr": true
 }
 ```
@@ -149,6 +247,19 @@ accurate  целевой режим: YOLO-веса + QR + OCR + temporal fusion
 ```
 
 Без весов сервис использует fallback-детекцию по QR/color/geometry. Это полезно для smoke-теста, но качество ниже.
+
+Минимальный smoke-тест без весов и OCR:
+
+```json
+{
+  "video_path": "F:/lenta_price_vision/packages/ml/src/ml/data/Unlabeled/26_2-10.mp4",
+  "mode": "fast",
+  "sample_fps": 1.0,
+  "max_frames": 30,
+  "enable_ocr": false,
+  "enable_qr": true
+}
+```
 
 ## Public proxy-eval
 
@@ -219,7 +330,20 @@ data.yaml
 runs/lenta/price_tag_yolo/weights/best.pt
 ```
 
-Его нужно использовать как `yolo_weights` для accurate-инференса.
+Скопируйте его в рекомендуемое место:
+
+```powershell
+New-Item -ItemType Directory -Force F:\lenta_price_vision\models
+Copy-Item runs\lenta\price_tag_yolo\weights\best.pt F:\lenta_price_vision\models\price_tag_yolo.pt
+```
+
+После этого используйте:
+
+```json
+{
+  "yolo_weights": "F:/lenta_price_vision/models/price_tag_yolo.pt"
+}
+```
 
 ## CSV-схема
 
