@@ -24,7 +24,22 @@ dependencies = [
 
 [project.optional-dependencies]
 ocr = [
-    "easyocr>=1.7.2",
+    "albumentations>=1.4.0,<2.0.0",
+    "paddleocr>=2.8.0",
+    "paddlepaddle>=2.6.0",
+    "pytesseract>=0.3.13",
+]
+qr = [
+    "zxing-cpp>=2.2.0",
+    "pyzbar>=0.1.9",
+]
+quality = [
+    "albumentations>=1.4.0,<2.0.0",
+    "paddleocr>=2.8.0",
+    "paddlepaddle>=2.6.0",
+    "pytesseract>=0.3.13",
+    "zxing-cpp>=2.2.0",
+    "pyzbar>=0.1.9",
 ]
 [dependency-groups]
 dev = [
