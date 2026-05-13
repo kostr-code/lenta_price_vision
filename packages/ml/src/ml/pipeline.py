@@ -6,11 +6,14 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from .candidates import CandidateFinderConfig, PriceTagCandidateFinder
+from .candidates import CandidateFinderConfig, PriceTagCandidate, PriceTagCandidateFinder
+from .crop_bank import CropDeduplicator, estimate_crop_quality
 from .evidence_fusion import EvidenceFusionTracker, FusionConfig, PriceTagObservation
+from .field_derivation import derive_fields
 from .field_extractor import ExtractionInput, PriceTagFieldExtractor
 from .media import BBox, bbox_iou, crop_image, enhance_crop, iter_sampled_frames, video_metadata
 from .qr_tools import QRDecoder
+from .rail_roi import RailRoi, RailRoiConfig, RailRoiDetector
 from .schema import (
     KEY_FIELDS_FOR_QUALITY,
     OUTPUT_COLUMNS,
@@ -33,6 +36,16 @@ class PipelineConfig:
     yolo_weights: str | None = None
     yolo_conf: float = 0.23
     detector_imgsz: int = 1600
+    tiled_yolo: bool = False
+    tile_size: int = 640
+    tile_stride: int = 512
+    max_tiles_per_frame: int = 64
+    rail_roi_enabled: bool = False
+    rail_roi_update_every_good_frames: int = 50
+    rail_roi_vertical_margin_ratio: float = 0.12
+    rail_roi_min_height_ratio: float = 0.18
+    rail_roi_max_height_ratio: float = 0.45
+    rail_roi_full_frame_fallback: bool = True
     min_sharpness: float = 18.0
     max_frames: int = 0
     max_detections_per_frame: int = 80
@@ -46,6 +59,9 @@ class PipelineConfig:
     tracker_center_threshold: float = 250.0
     max_lost: int = 5
     min_track_observations: int = 1
+    crop_phash_dedup: bool = True
+    phash_max_distance: int = 2
+    derive_qr_fields_when_missing: bool = False
     save_crops: bool = False
     save_debug_json: bool = True
 
@@ -56,7 +72,15 @@ class PipelineConfig:
         if normalized == "fast":
             values.update({"enable_ocr": False, "sample_fps": 1.5, "min_sharpness": 10.0})
         elif normalized in {"accurate", "quality"}:
-            values.update({"enable_ocr": True, "enable_qr": True, "sample_fps": 2.0})
+            values.update(
+                {
+                    "enable_ocr": True,
+                    "enable_qr": True,
+                    "sample_fps": 2.0,
+                    "tiled_yolo": True,
+                    "rail_roi_enabled": True,
+                }
+            )
         else:
             values.update({"mode": "cpu_safe", "enable_ocr": True, "enable_qr": True})
         values.update({key: value for key, value in overrides.items() if value is not None})
@@ -87,10 +111,23 @@ class RetailShelfPipeline:
                 yolo_weights=self.config.yolo_weights,
                 yolo_conf=self.config.yolo_conf,
                 detector_imgsz=self.config.detector_imgsz,
+                tiled_yolo=self.config.tiled_yolo,
+                tile_size=self.config.tile_size,
+                tile_stride=self.config.tile_stride,
+                max_tiles_per_frame=self.config.max_tiles_per_frame,
                 max_detections_per_frame=self.config.max_detections_per_frame,
             )
         )
         self.qr_decoder = QRDecoder()
+        self.rail_roi = RailRoiDetector(
+            RailRoiConfig(
+                enabled=self.config.rail_roi_enabled,
+                update_every_good_frames=self.config.rail_roi_update_every_good_frames,
+                vertical_margin_ratio=self.config.rail_roi_vertical_margin_ratio,
+                min_roi_height_ratio=self.config.rail_roi_min_height_ratio,
+                max_roi_height_ratio=self.config.rail_roi_max_height_ratio,
+            )
+        )
         self.text_reader = TextReader(
             TextReaderConfig(
                 enabled=self.config.enable_ocr,
@@ -122,6 +159,7 @@ class RetailShelfPipeline:
         }
         frames_seen = 0
         detections_seen = 0
+        crop_deduplicator = CropDeduplicator(self.config.phash_max_distance)
 
         for frame_order, frame in enumerate(
             iter_sampled_frames(
@@ -133,13 +171,43 @@ class RetailShelfPipeline:
         ):
             frames_seen += 1
             frame_observations: list[PriceTagObservation] = []
-            candidates = self.finder.find(frame.image)
+            rail_roi = self.rail_roi.detect(frame.image, frame_order)
+            candidates, detection_roi = self._find_candidates_in_roi(frame.image, rail_roi)
             detections_seen += len(candidates)
+            frame_height, frame_width = frame.image.shape[:2]
+            debug_detections: list[dict[str, Any]] = []
             for candidate_order, candidate in enumerate(candidates):
                 crop = crop_image(frame.image, candidate.bbox, self.config.crop_pad_px)
                 enhanced = enhance_crop(crop)
-                qr_decodes = self.qr_decoder.decode(enhanced) if self.config.enable_qr else []
-                text_lines = self.text_reader.read(enhanced) if self.config.enable_ocr else []
+                quick_quality = estimate_crop_quality(
+                    enhanced,
+                    candidate.bbox,
+                    frame_width,
+                    frame_height,
+                    candidate.confidence,
+                    qr_decoded=False,
+                )
+                should_read = not self.config.crop_phash_dedup or crop_deduplicator.should_process(
+                    quick_quality
+                )
+                qr_decodes = (
+                    self.qr_decoder.decode(enhanced)
+                    if self.config.enable_qr and should_read
+                    else []
+                )
+                text_lines = (
+                    self.text_reader.read(enhanced)
+                    if self.config.enable_ocr and should_read
+                    else []
+                )
+                crop_quality = estimate_crop_quality(
+                    enhanced,
+                    candidate.bbox,
+                    frame_width,
+                    frame_height,
+                    candidate.confidence,
+                    qr_decoded=bool(qr_decodes),
+                )
                 record = self.extractor.extract(
                     ExtractionInput(
                         filename=video_path.name,
@@ -148,6 +216,10 @@ class RetailShelfPipeline:
                         color_hint=self._color_hint(candidate.label, candidate.source),
                         crop=enhanced,
                     )
+                )
+                record = derive_fields(
+                    record,
+                    derive_qr_fields_when_missing=self.config.derive_qr_fields_when_missing,
                 )
                 record.update(candidate.bbox.to_record_values())
                 record["frame_timestamp"] = str(frame.timestamp_ms)
@@ -158,9 +230,29 @@ class RetailShelfPipeline:
                         frame_timestamp=frame.timestamp_ms,
                         frame_index=frame_order,
                         confidence=candidate.confidence,
-                        sharpness=frame.sharpness,
+                        sharpness=crop_quality.sharpness,
                         source=candidate.source,
                     )
+                )
+                debug_detections.append(
+                    {
+                        "candidate": candidate_order,
+                        "source": candidate.source,
+                        "bbox": list(candidate.bbox.as_int_tuple()),
+                        "confidence": round(candidate.confidence, 4),
+                        "crop_quality": {
+                            "sharpness": round(crop_quality.sharpness, 3),
+                            "area": round(crop_quality.area, 1),
+                            "score": round(crop_quality.score, 4),
+                            "phash": crop_quality.phash,
+                            "near_border": crop_quality.near_border,
+                            "dedup_skipped_ocr": not should_read,
+                        },
+                        "qr_decoded": bool(qr_decodes),
+                        "qr_sources": [decode.source for decode in qr_decodes],
+                        "ocr_lines": len(text_lines),
+                        "filled_fields": record_completeness(record),
+                    }
                 )
                 if self.config.save_crops:
                     self._save_crop(crops_dir, frame_order, candidate_order, enhanced)
@@ -171,8 +263,10 @@ class RetailShelfPipeline:
                     "frame_index": frame.index,
                     "timestamp_ms": frame.timestamp_ms,
                     "sharpness": round(frame.sharpness, 2),
+                    "rail_roi": detection_roi.to_debug(),
                     "detections": len(candidates),
                     "sources": [candidate.source for candidate in candidates],
+                    "items": debug_detections,
                 }
             )
 
@@ -189,6 +283,7 @@ class RetailShelfPipeline:
                     "detections_seen": detections_seen,
                     "finder": self.finder.yolo_status,
                     "ocr": self.text_reader.status,
+                    "tracks": tracker.debug_tracks(),
                 }
             )
             debug_path = output_dir / f"{video_path.stem}_debug.json"
@@ -220,6 +315,36 @@ class RetailShelfPipeline:
             cv2.imwrite(str(crop_path), image)
         except Exception:
             return
+
+    def _find_candidates_in_roi(
+        self,
+        image: Any,
+        rail_roi: RailRoi,
+    ) -> tuple[list[PriceTagCandidate], RailRoi]:
+        if rail_roi.is_full_frame:
+            return self.finder.find(image), rail_roi
+
+        roi_image = rail_roi.crop(image)
+        roi_candidates = [
+            PriceTagCandidate(
+                bbox=rail_roi.translate_bbox(candidate.bbox),
+                confidence=candidate.confidence,
+                source=f"{candidate.source}:rail_roi",
+                label=candidate.label,
+            )
+            for candidate in self.finder.find(roi_image)
+        ]
+        if roi_candidates or not self.config.rail_roi_full_frame_fallback:
+            return roi_candidates, rail_roi
+        height, width = image.shape[:2]
+        return self.finder.find(image), RailRoi(
+            0,
+            0,
+            width,
+            height,
+            rail_roi.score,
+            "rail_roi_fallback_full_frame",
+        )
 
     def _color_hint(self, label: str, source: str) -> str:
         for color in ("red", "yellow", "green", "white"):

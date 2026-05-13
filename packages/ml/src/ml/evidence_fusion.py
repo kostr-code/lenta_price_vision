@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from .field_voting import FieldVoter
 from .media import BBox, bbox_iou, center_distance
 from .schema import (
     ABSENT_VALUE,
@@ -32,10 +33,17 @@ class PriceTagObservation:
 class PriceTagTrack:
     observations: list[PriceTagObservation] = field(default_factory=list)
     fused_record: dict[str, str] = field(default_factory=dict)
+    field_voter: FieldVoter = field(default_factory=FieldVoter)
     last_frame_index: int = 0
 
     def add(self, observation: PriceTagObservation) -> None:
         self.observations.append(observation)
+        self.field_voter.add_record(
+            observation.record,
+            source=observation.source or "regex",
+            confidence=min(1.0, observation.score / 12.0),
+            frame_timestamp=observation.frame_timestamp,
+        )
         if not self.fused_record:
             self.fused_record = dict(observation.record)
         else:
@@ -48,10 +56,20 @@ class PriceTagTrack:
 
     def to_record(self) -> dict[str, str]:
         best = self.best_observation
-        record = dict(self.fused_record)
+        record = self.field_voter.to_record(self.fused_record)
         record.update(best.bbox.to_record_values())
         record["frame_timestamp"] = str(best.frame_timestamp)
         return record
+
+    def debug_summary(self) -> dict[str, Any]:
+        best = self.best_observation
+        return {
+            "observations": len(self.observations),
+            "best_timestamp": best.frame_timestamp,
+            "best_bbox": list(best.bbox.as_int_tuple()),
+            "best_score": round(best.score, 3),
+            "fields": self.field_voter.debug_summary(),
+        }
 
 
 @dataclass(frozen=True)
@@ -84,6 +102,14 @@ class EvidenceFusionTracker:
             if len(track.observations) >= self.config.min_track_observations
         ]
         return [track.to_record() for track in sorted(active, key=self._track_sort_key)]
+
+    def debug_tracks(self) -> list[dict[str, Any]]:
+        active = [
+            track
+            for track in self.tracks
+            if len(track.observations) >= self.config.min_track_observations
+        ]
+        return [track.debug_summary() for track in sorted(active, key=self._track_sort_key)]
 
     def _find_track(
         self,

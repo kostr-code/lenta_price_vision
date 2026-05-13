@@ -1,58 +1,52 @@
 # ML service
 
-ML-часть отвечает за обработку видео с полок: находит ценники, пытается извлечь QR/OCR-поля, объединяет повторы по кадрам и сохраняет итоговый CSV в фиксированной схеме хакатона.
+ML-часть отвечает за путь `video -> detections -> QR/OCR -> field voting -> CSV`.
+Решение работает локально, без cloud OCR/CV API. Ручная разметка не используется:
+YOLO-датасет собирается автоматически из public CSV/video, которые лежат в `data`.
 
 ## Структура
 
 ```text
 ml/
-  main.py              # FastAPI API: загрузка/путь к видео -> скачать CSV
-  pipeline.py          # основной пайплайн: видео -> детекция -> QR/OCR -> фьюжн -> CSV
-  candidates.py        # YOLO + QR-seed + color/geometry fallback для поиска ценников
-  qr_tools.py          # zxing-cpp / pyzbar / OpenCV QR decoding + парсинг QR-полей
-  text_reader.py       # OCR: PaddleOCR + Tesseract ensemble
-  field_extractor.py   # поля ценника: цены, скидка, barcode, SKU, дата, зона, цвет
+  main.py              # FastAPI: загрузка/путь к видео, eval, сборка датасета, train
+  pipeline.py          # основной пайплайн: видео -> CSV
+  candidates.py        # YOLO + tiled YOLO + QR-seed + color/geometry fallback
+  rail_roi.py          # поиск полосы полочной рейки и ограничение зоны детекции
+  qr_tools.py          # zxing-cpp / pyzbar / OpenCV QR decoding, multi-scale early exit
+  text_reader.py       # PaddleOCR + Tesseract ensemble
+  field_extractor.py   # парсинг полей ценника из OCR/QR
+  field_voting.py      # голосование по полям между кадрами и источниками
+  validators.py        # нормализация/валидация цен, barcode, SKU, дат, скидок, символов
+  crop_bank.py         # оценка crop: sharpness/area/conf/QR + pHash dedup
   evidence_fusion.py   # объединение одного ценника между кадрами
-  media.py             # чтение видео, sampling кадров, bbox, crop enhancement
-  schema.py            # фиксированная CSV-схема и legacy-алиасы колонок
-  training.py          # сборка YOLO-датасета и запуск обучения detector-а
-  README.md            # краткая инструкция по ML-части
-
-  data/
-    25_12-20/          # public-разметка: mp4 + csv
-    26_12-20/          # public-разметка: mp4 + csv
-    43_15/             # public-разметка: mp4 + csv
-    Unlabeled/         # локальные видео без разметки для inference/self-training
-
-  runs/                # создается при запуске: CSV, debug JSON, датасеты, результаты eval
+  field_derivation.py  # опциональный вывод QR-полей из OCR-полей
+  schema.py            # фиксированная CSV-схема задания
+  training.py          # сборка YOLO/tiled YOLO датасета и запуск обучения
+  media.py             # видео, кадры, bbox, crop enhancement
+  data/                # public-разметка и локальные видео для инференса
+  runs/                # результаты запусков, CSV, debug JSON, датасеты
 ```
 
-Аналоги классических скриптов сделаны как API endpoints:
+Аналоги отдельных `scripts/*.py` сделаны как API endpoints:
 
 ```text
-POST /dataset/yolo     # build_yolo_dataset.py
-POST /train/yolo       # train_detector.py
-POST /predict/video    # infer_video.py для загруженного mp4
-POST /predict/path     # infer_video.py для локального пути
-POST /evaluate/public  # evaluate_on_public.py
+POST /predict/path       # inference по локальному пути к видео
+POST /predict/video      # upload mp4 -> CSV
+POST /evaluate/public    # локальная proxy-оценка на public CSV/video
+POST /dataset/yolo       # сборка YOLO или tiled YOLO датасета
+POST /train/yolo         # обучение YOLO через ultralytics
 ```
 
-## Быстрый старт
+## Установка
 
-Запускать команды удобнее из папки `packages/ml`:
+Команды удобнее запускать из `packages/ml`:
 
 ```powershell
 cd packages\ml
-uv run ml-service
-```
-
-Для полного OCR/QR-стека установи quality-extra:
-
-```powershell
 uv sync --extra quality
 ```
 
-Он подключает Python-пакеты:
+`quality` extra ставит Python-зависимости для OCR/QR:
 
 ```text
 PaddleOCR + paddlepaddle
@@ -61,119 +55,56 @@ zxing-cpp
 pyzbar
 ```
 
-Важно: `pytesseract` — это Python-обертка. Для реального Tesseract OCR на машине ещё должен быть установлен системный бинарник Tesseract и языковые данные `rus`/`eng`.
-
-Для `pyzbar` на Windows/сервере может понадобиться системная библиотека ZBar. Если её нет, QR всё равно будет пробоваться через `zxing-cpp` и OpenCV QR.
-
-Проверка Python-зависимостей:
-
-```powershell
-uv run python -c "import paddleocr, paddle, pytesseract, zxingcpp; import pyzbar.pyzbar; print('quality deps ok')"
-```
-
-Проверка языков Tesseract:
+Важно: `pytesseract` это Python-обертка. Для Tesseract нужен системный бинарник
+и языки `rus`/`eng`. Проверка:
 
 ```powershell
 tesseract --list-langs
 ```
 
-Для русского fallback-OCR в списке должен быть `rus`. Если есть только `eng`, PaddleOCR всё равно может читать русский, но Tesseract fallback для русского текста будет ограничен.
-
-По умолчанию сервис поднимается на:
-
-```text
-http://localhost:8000
-```
-
-Проверка:
+Проверка импортов:
 
 ```powershell
-uv run python -c "from ml.main import app; print(app.title)"
+uv run python -c "import paddleocr, paddle, pytesseract, zxingcpp; import pyzbar.pyzbar; print('quality deps ok')"
 ```
 
-## Основные endpoints
+## Запуск сервиса
 
-```text
-GET  /health             статус сервиса и CSV-схема
-GET  /schema             список колонок итогового CSV
-GET  /datasets           найденные размеченные видео/CSV в src/ml/data
-POST /predict/video      загрузить mp4 и получить CSV
-POST /predict/path       обработать mp4 по локальному пути
-POST /evaluate/public    прогнать proxy-оценку на размеченных public-данных
-POST /dataset/yolo       собрать YOLO-датасет из public CSV/video
-POST /train/yolo         запустить обучение YOLO через ultralytics
+```powershell
+uv run ml-service
 ```
 
-Документация FastAPI после запуска:
+После запуска:
 
 ```text
 http://localhost:8000/docs
 ```
 
-## Где лежат модели
-
-Рекомендуемое место для обученного YOLO-детектора:
-
-```text
-models/price_tag_yolo.pt
-```
-
-Это путь от корня репозитория:
-
-```text
-F:/lenta_price_vision/models/price_tag_yolo.pt
-```
-
-Такой файл игнорируется git-ом, потому что веса большие и должны храниться отдельно от кода.
-
-Пайплайн ищет веса автоматически в двух местах:
-
-```text
-<текущая рабочая папка>/models/price_tag_yolo.pt
-<корень репозитория>/models/price_tag_yolo.pt
-```
-
-Надежнее всего явно передавать путь в запросе:
-
-```json
-{
-  "yolo_weights": "F:/lenta_price_vision/models/price_tag_yolo.pt"
-}
-```
-
-Также можно указать путь через переменную окружения:
+Быстрая проверка без сервера:
 
 ```powershell
-$env:ML_YOLO_WEIGHTS="F:/lenta_price_vision/models/price_tag_yolo.pt"
-uv run ml-service
+uv run python -c "from ml.main import app; print(app.title)"
 ```
 
-Если веса лежат в другом месте, это нормально: просто передайте полный путь в `yolo_weights`.
+## Где должны лежать данные
 
-## Где лежат данные
-
-Для public-разметки ожидается структура:
+Public-разметка ожидается здесь:
 
 ```text
 packages/ml/src/ml/data/
   25_12-20/
-    25_12-20.mp4
-    25_12-20.csv
+    *.mp4
+    *.csv
   26_12-20/
-    26_12-20.mp4
-    26_12-20.csv
+    *.mp4
+    *.csv
   43_15/
-    43_15.mp4
-    43_15.csv
+    *.mp4
+    *.csv
 ```
 
-Эти папки используются для:
-
-```text
-GET  /datasets
-POST /evaluate/public
-POST /dataset/yolo
-```
+Названия файлов условные: пайплайн ищет в каждой папке первый CSV и подходящее MP4.
+Если stem не совпадает, берется самое крупное видео в папке.
 
 Видео без разметки для обычного инференса удобно класть сюда:
 
@@ -181,23 +112,63 @@ POST /dataset/yolo
 packages/ml/src/ml/data/Unlabeled/
 ```
 
-Например:
+Для `POST /predict/path` видео может лежать где угодно, если передать полный путь.
+
+## Где должны лежать модели
+
+Рекомендуемое место для обученного YOLO-детектора:
 
 ```text
-packages/ml/src/ml/data/Unlabeled/26_2-10.mp4
+models/price_tag_yolo.pt
 ```
 
-Для `POST /predict/path` видео может лежать где угодно на машине. Главное — передать полный путь:
+Пайплайн ищет веса автоматически в:
+
+```text
+<текущая рабочая папка>/models/price_tag_yolo.pt
+<корень репозитория>/models/price_tag_yolo.pt
+```
+
+Надежнее всего явно передавать путь:
 
 ```json
 {
-  "video_path": "F:/lenta_price_vision/packages/ml/src/ml/data/Unlabeled/26_2-10.mp4"
+  "yolo_weights": "models/price_tag_yolo.pt"
 }
 ```
 
-Для `POST /predict/video` путь не нужен: файл загружается через Swagger/API и сохраняется во временную папку запуска.
+Или через env:
 
-Результаты инференса пишутся сюда:
+```powershell
+$env:ML_YOLO_WEIGHTS="models/price_tag_yolo.pt"
+uv run ml-service
+```
+
+Веса и экспортированные модели не кладем в git: `.pt`, `.onnx`, `.rknn`, `.engine`
+игнорируются.
+
+## Inference
+
+Пример `POST /predict/path`:
+
+```json
+{
+  "video_path": "packages/ml/src/ml/data/Unlabeled/demo.mp4",
+  "mode": "accurate",
+  "sample_fps": 2.0,
+  "max_frames": 0,
+  "yolo_weights": "models/price_tag_yolo.pt",
+  "enable_ocr": true,
+  "enable_qr": true,
+  "tiled_yolo": true,
+  "rail_roi_enabled": true,
+  "crop_phash_dedup": true,
+  "derive_qr_fields_when_missing": false,
+  "save_crops": false
+}
+```
+
+Результаты сохраняются в:
 
 ```text
 packages/ml/src/ml/runs/<run_id>/
@@ -205,91 +176,65 @@ packages/ml/src/ml/runs/<run_id>/
   *_debug.json
 ```
 
-Папка `runs/` игнорируется git-ом.
-
-## Инференс по локальному видео
-
-Пример через Python-клиент или Swagger `POST /predict/path`:
-
-```json
-{
-  "video_path": "F:/lenta_price_vision/packages/ml/src/ml/data/Unlabeled/26_2-10.mp4",
-  "mode": "accurate",
-  "sample_fps": 2.0,
-  "max_frames": 0,
-  "yolo_weights": "F:/lenta_price_vision/models/price_tag_yolo.pt",
-  "enable_ocr": true,
-  "enable_qr": true
-}
-```
-
-Результат сохраняется в `src/ml/runs/<run_id>/`:
-
-```text
-*_recognized.csv
-*_debug.json
-```
+`debug.json` содержит настройки, rail ROI, bbox, качество crop, QR/OCR-статус и
+сводку по трекам.
 
 ## Режимы
 
 ```text
-fast      быстро: детекция + QR, OCR можно отключить
-cpu_safe  локальный режим без обязательных YOLO-весов
-accurate  целевой режим: YOLO-веса + QR + OCR + temporal fusion
+fast      быстрый smoke/inference: меньше FPS, OCR по умолчанию отключен
+cpu_safe  безопасный локальный режим без обязательных YOLO-весов
+accurate  целевой режим: YOLO + tiled YOLO + rail ROI + QR + OCR + fusion
+quality   alias accurate
 ```
 
-Если есть обученные веса, передайте путь:
+Если весов нет, будут работать QR-seed и color/geometry fallback. Это полезно для
+smoke-теста, но нормальное качество ожидается после обучения YOLO.
 
-```json
-{
-  "yolo_weights": "F:/lenta_price_vision/models/price_tag_yolo.pt"
-}
+## Что уже добавлено из сильных идей
+
+```text
+tiled YOLO inference      ценники крупнее для модели на 4K/широких кадрах
+tiled YOLO dataset        train labels пересчитываются из full-frame bbox в tile bbox
+rail ROI                  поиск горизонтальной полочной рейки и детекция внутри ROI
+multi-scale QR            zxing-cpp / pyzbar / OpenCV, остановка после успешного decode
+PaddleOCR + Tesseract     ensemble OCR с graceful fallback
+crop pHash dedup          не гоняем OCR по одинаковым crop
+field voting              выбираем лучшее значение поля между кадрами/источниками
+validators                отбрасываем шумные цены, barcode, SKU, даты, скидки
+debug tracks              видно, почему строка CSV получилась именно такой
 ```
-
-Без весов сервис использует fallback-детекцию по QR/color/geometry. Это полезно для smoke-теста, но качество ниже.
-
-Минимальный smoke-тест без весов и OCR:
-
-```json
-{
-  "video_path": "F:/lenta_price_vision/packages/ml/src/ml/data/Unlabeled/26_2-10.mp4",
-  "mode": "fast",
-  "sample_fps": 1.0,
-  "max_frames": 30,
-  "enable_ocr": false,
-  "enable_qr": true
-}
-```
-
-## Public proxy-eval
-
-Через Swagger `POST /evaluate/public`:
-
-```json
-{
-  "data_dir": "F:/lenta_price_vision/packages/ml/src/ml/data",
-  "mode": "fast",
-  "sample_fps": 1.0,
-  "max_frames": 0
-}
-```
-
-Отчет появится в `src/ml/runs/<run_id>/evaluation_report.json`.
 
 ## Сборка YOLO-датасета
 
-Через `POST /dataset/yolo`:
+Обычный full-frame датасет:
 
 ```json
 {
-  "data_dir": "F:/lenta_price_vision/packages/ml/src/ml/data",
-  "output_dir": "F:/lenta_price_vision/packages/ml/src/ml/runs/lenta_yolo_dataset",
+  "data_dir": "packages/ml/src/ml/data",
+  "output_dir": "packages/ml/src/ml/runs/lenta_yolo_dataset",
   "val_fraction": 0.2,
-  "seed": 42
+  "seed": 42,
+  "tiled": false
 }
 ```
 
-На выходе будет структура:
+Рекомендуемый tiled dataset для 4K/мелких ценников:
+
+```json
+{
+  "data_dir": "packages/ml/src/ml/data",
+  "output_dir": "packages/ml/src/ml/runs/lenta_yolo_tiled_dataset",
+  "val_fraction": 0.2,
+  "seed": 42,
+  "tiled": true,
+  "tile_size": 640,
+  "tile_stride": 512,
+  "min_box_visibility": 0.25
+}
+```
+
+На выходе:
 
 ```text
 images/train
@@ -299,58 +244,95 @@ labels/val
 data.yaml
 ```
 
+Логика tiled dataset: кадр берется по `frame_timestamp` из CSV, режется на тайлы,
+bbox клипается границами тайла и переводится в YOLO-формат. Тайлы без ценников не
+сохраняются.
+
 ## Обучение YOLO
 
-Через `POST /train/yolo`:
+Через API `POST /train/yolo`:
 
 ```json
 {
-  "data_yaml": "F:/lenta_price_vision/packages/ml/src/ml/runs/lenta_yolo_dataset/data.yaml",
+  "data_yaml": "packages/ml/src/ml/runs/lenta_yolo_tiled_dataset/data.yaml",
   "model": "yolo11n.pt",
   "epochs": 150,
-  "imgsz": 1280,
-  "batch": 4,
-  "device": "cpu",
-  "project": "runs/lenta",
+  "imgsz": 640,
+  "batch": 16,
+  "device": "0",
+  "project": "F:/lenta_price_vision/packages/ml/src/ml/runs/detect",
   "name": "price_tag_yolo"
 }
 ```
 
-Для GPU поменять:
+Для CPU вместо GPU:
 
 ```json
 {
-  "device": "0"
+  "device": "cpu",
+  "batch": 4
 }
 ```
 
-После обучения лучший вес обычно лежит в:
+Напрямую через ultralytics CLI:
 
-```text
-runs/lenta/price_tag_yolo/weights/best.pt
+```powershell
+uv run yolo detect train model=yolo11n.pt data=F:/lenta_price_vision/packages/ml/src/ml/runs/lenta_yolo_tiled_dataset/data.yaml imgsz=640 epochs=120 batch=16 device=0 cache=disk project=F:/lenta_price_vision/packages/ml/src/ml/runs/detect name=price_tag_yolo11n_tiled_640
 ```
 
-Скопируйте его в рекомендуемое место:
+После обучения лучший вес обычно здесь:
+
+```text
+F:/lenta_price_vision/packages/ml/src/ml/runs/detect/price_tag_yolo11n_tiled_640/weights/best.pt
+```
+
+Скопировать в стандартное место:
 
 ```powershell
 New-Item -ItemType Directory -Force F:\lenta_price_vision\models
-Copy-Item runs\lenta\price_tag_yolo\weights\best.pt F:\lenta_price_vision\models\price_tag_yolo.pt
+Copy-Item F:\lenta_price_vision\packages\ml\src\ml\runs\detect\price_tag_yolo11n_tiled_640\weights\best.pt F:\lenta_price_vision\models\price_tag_yolo.pt
 ```
 
-После этого используйте:
+## Оценка на public-разметке
+
+`POST /evaluate/public`:
 
 ```json
 {
-  "yolo_weights": "F:/lenta_price_vision/models/price_tag_yolo.pt"
+  "data_dir": "packages/ml/src/ml/data",
+  "mode": "accurate",
+  "sample_fps": 1.0,
+  "max_frames": 0,
+  "yolo_weights": "models/price_tag_yolo.pt",
+  "tiled_yolo": true,
+  "rail_roi_enabled": true
 }
+```
+
+Отчет появится в:
+
+```text
+runs/<run_id>/evaluation_report.json
 ```
 
 ## CSV-схема
 
-Итоговый CSV всегда пишется в фиксированном порядке колонок. Legacy-колонка `wholesale_level_1_coun` из public-разметки автоматически нормализуется в:
+Итоговый CSV всегда пишется в фиксированном порядке:
 
 ```text
-wholesale_level_1_count
+filename, product_name, price_default, price_card, price_discount,
+barcode, discount_amount, id_sku, print_datetime, code, additional_info,
+color, special_symbols, frame_timestamp, x_min, y_min, x_max, y_max,
+qr_code_barcode, price1_qr, price2_qr, price3_qr, price4_qr,
+wholesale_level_1_count, wholesale_level_1_price,
+wholesale_level_2_count, wholesale_level_2_price,
+action_price_qr, action_code_qr
+```
+
+Legacy-колонка public-разметки:
+
+```text
+wholesale_level_1_coun -> wholesale_level_1_count
 ```
 
 Правила заполнения:
@@ -358,4 +340,16 @@ wholesale_level_1_count
 ```text
 нет      параметр точно отсутствует
 пусто    параметр есть, но не распознан
+```
+
+## Практичный порядок работы
+
+```text
+1. Положить public mp4/csv в packages/ml/src/ml/data/<sequence>/
+2. Собрать tiled YOLO dataset через POST /dataset/yolo
+3. Обучить YOLO через POST /train/yolo или uv run yolo ...
+4. Положить best.pt в models/price_tag_yolo.pt
+5. Прогнать POST /evaluate/public
+6. Прогнать POST /predict/path на Unlabeled видео
+7. Смотреть *_recognized.csv и *_debug.json
 ```

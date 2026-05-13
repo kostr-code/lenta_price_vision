@@ -20,6 +20,10 @@ class CandidateFinderConfig:
     yolo_weights: str | None = None
     yolo_conf: float = 0.23
     detector_imgsz: int = 1600
+    tiled_yolo: bool = False
+    tile_size: int = 640
+    tile_stride: int = 512
+    max_tiles_per_frame: int = 64
     max_detections_per_frame: int = 80
     max_color_fallback_detections: int = 32
     fallback_min_area: int = 1_400
@@ -58,6 +62,8 @@ class PriceTagCandidateFinder:
         model = self._load_yolo()
         if model is None:
             return []
+        if self.config.tiled_yolo:
+            return self._find_with_tiled_yolo(image, model)
         detections: list[PriceTagCandidate] = []
         try:
             results = model.predict(
@@ -80,6 +86,55 @@ class PriceTagCandidateFinder:
                 bbox = clamp_bbox(BBox(*map(float, coords)), width, height)
                 detections.append(PriceTagCandidate(bbox, confidence, "yolo"))
         return detections
+
+    def _find_with_tiled_yolo(self, image: Any, model: Any) -> list[PriceTagCandidate]:
+        detections: list[PriceTagCandidate] = []
+        height, width = image.shape[:2]
+        tiles = list(
+            iter_tiles(
+                width=width,
+                height=height,
+                tile_size=self.config.tile_size,
+                stride=self.config.tile_stride,
+                max_tiles=self.config.max_tiles_per_frame,
+            )
+        )
+        for tile_index, tile in enumerate(tiles):
+            x_min, y_min, x_max, y_max = tile
+            tile_image = image[y_min:y_max, x_min:x_max]
+            if tile_image.size == 0:
+                continue
+            try:
+                results = model.predict(
+                    tile_image,
+                    conf=self.config.yolo_conf,
+                    imgsz=self.config.detector_imgsz,
+                    verbose=False,
+                )
+            except Exception as exc:  # pragma: no cover - depends on local model
+                self._yolo_load_error = str(exc)
+                return detections
+            for result in results:
+                boxes = getattr(result, "boxes", None)
+                if boxes is None:
+                    continue
+                for box in boxes:
+                    coords = box.xyxy[0].detach().cpu().tolist()
+                    confidence = float(box.conf[0].detach().cpu().item())
+                    bbox = BBox(
+                        float(coords[0]) + x_min,
+                        float(coords[1]) + y_min,
+                        float(coords[2]) + x_min,
+                        float(coords[3]) + y_min,
+                    )
+                    detections.append(
+                        PriceTagCandidate(
+                            clamp_bbox(bbox, width, height),
+                            confidence,
+                            f"tiled_yolo:{tile_index}",
+                        )
+                    )
+        return self._deduplicate(detections)
 
     def _load_yolo(self) -> Any | None:
         weights = self.config.yolo_weights
@@ -212,3 +267,37 @@ class PriceTagCandidateFinder:
         if candidates and all(candidate.source.startswith("color_") for candidate in candidates):
             return min(limit, self.config.max_color_fallback_detections)
         return limit
+
+
+def iter_tiles(
+    width: int,
+    height: int,
+    tile_size: int,
+    stride: int,
+    max_tiles: int,
+) -> list[tuple[int, int, int, int]]:
+    if width <= 0 or height <= 0:
+        return []
+    tile_size = max(64, tile_size)
+    stride = max(32, stride)
+    xs = axis_starts(width, tile_size, stride)
+    ys = axis_starts(height, tile_size, stride)
+    tiles: list[tuple[int, int, int, int]] = []
+    for y_min in ys:
+        for x_min in xs:
+            x_max = min(width, x_min + tile_size)
+            y_max = min(height, y_min + tile_size)
+            tiles.append((x_min, y_min, x_max, y_max))
+            if max_tiles > 0 and len(tiles) >= max_tiles:
+                return tiles
+    return tiles
+
+
+def axis_starts(length: int, tile_size: int, stride: int) -> list[int]:
+    if length <= tile_size:
+        return [0]
+    starts = list(range(0, max(1, length - tile_size + 1), stride))
+    last = length - tile_size
+    if starts[-1] != last:
+        starts.append(last)
+    return starts

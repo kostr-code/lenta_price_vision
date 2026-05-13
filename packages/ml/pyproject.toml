@@ -16,6 +16,9 @@ dependencies = [
     "numpy>=1.26.0",
     "opencv-python>=4.10.0",
 
+    "torch>=2.11.0",
+    "torchvision>=0.26.0",
+
     "ultralytics>=8.3.0",
 
     "orjson>=3.10.7",
@@ -58,6 +61,19 @@ build-backend = "hatchling.build"
 
 [tool.uv]
 package = true
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+torchvision = [
+    { index = "pytorch-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/ml"]

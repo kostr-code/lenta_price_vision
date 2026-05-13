@@ -19,11 +19,17 @@ class QRDecode:
 class QRDecoder:
     """Multi-backend QR/barcode reader with a no-crash optional dependency policy."""
 
+    def __init__(self, scales: tuple[float, ...] = (1.0, 1.5, 2.0)) -> None:
+        self.scales = scales
+
     def decode(self, image: Any) -> list[QRDecode]:
         payloads: list[tuple[str, str]] = []
-        payloads.extend(self._decode_with_zxingcpp(image))
-        payloads.extend(self._decode_with_pyzbar(image))
-        payloads.extend(self._decode_with_opencv(image))
+        for scaled_image, suffix in self._scaled_images(image):
+            payloads.extend(
+                (raw, f"{source}{suffix}") for raw, source in self._decode_once(scaled_image)
+            )
+            if payloads:
+                break
 
         seen: set[str] = set()
         decoded: list[QRDecode] = []
@@ -34,6 +40,34 @@ class QRDecoder:
             seen.add(value)
             decoded.append(QRDecode(raw=value, fields=parse_qr_payload(value), source=source))
         return decoded
+
+    def _decode_once(self, image: Any) -> list[tuple[str, str]]:
+        payloads: list[tuple[str, str]] = []
+        payloads.extend(self._decode_with_zxingcpp(image))
+        payloads.extend(self._decode_with_pyzbar(image))
+        payloads.extend(self._decode_with_opencv(image))
+        return payloads
+
+    def _scaled_images(self, image: Any) -> list[tuple[Any, str]]:
+        variants: list[tuple[Any, str]] = [(image, "")]
+        try:
+            from .media import import_cv2
+
+            cv2 = import_cv2()
+            for scale in self.scales:
+                if scale == 1.0:
+                    continue
+                resized = cv2.resize(
+                    image,
+                    None,
+                    fx=scale,
+                    fy=scale,
+                    interpolation=cv2.INTER_CUBIC,
+                )
+                variants.append((resized, f"@{scale:g}x"))
+        except Exception:
+            return variants
+        return variants
 
     def _decode_with_zxingcpp(self, image: Any) -> list[tuple[str, str]]:
         try:

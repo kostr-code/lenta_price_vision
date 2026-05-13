@@ -31,6 +31,13 @@ YOLO_WEIGHTS_FORM_PARAM = Form(None)
 ENABLE_OCR_FORM_PARAM = Form(None)
 ENABLE_QR_FORM_PARAM = Form(None)
 SAVE_CROPS_FORM_PARAM = Form(False)
+TILED_YOLO_FORM_PARAM = Form(None)
+TILE_SIZE_FORM_PARAM = Form(None)
+TILE_STRIDE_FORM_PARAM = Form(None)
+MAX_TILES_FORM_PARAM = Form(None)
+CROP_PHASH_DEDUP_FORM_PARAM = Form(None)
+DERIVE_QR_FIELDS_FORM_PARAM = Form(None)
+RAIL_ROI_FORM_PARAM = Form(None)
 app = FastAPI(title="Price Tag Audit ML Service")
 
 
@@ -70,6 +77,13 @@ class PathPredictionRequest(BaseModel):
     yolo_weights: str | None = None
     enable_ocr: bool | None = None
     enable_qr: bool | None = None
+    tiled_yolo: bool | None = None
+    tile_size: int | None = Field(default=None, ge=64)
+    tile_stride: int | None = Field(default=None, ge=32)
+    max_tiles_per_frame: int | None = Field(default=None, ge=0)
+    rail_roi_enabled: bool | None = None
+    crop_phash_dedup: bool | None = None
+    derive_qr_fields_when_missing: bool | None = None
     save_crops: bool = False
 
 
@@ -80,6 +94,11 @@ class EvaluationRequest(BaseModel):
     sample_fps: float | None = Field(default=1.0, gt=0)
     max_frames: int = Field(default=0, ge=0)
     yolo_weights: str | None = None
+    tiled_yolo: bool | None = None
+    tile_size: int | None = Field(default=None, ge=64)
+    tile_stride: int | None = Field(default=None, ge=32)
+    max_tiles_per_frame: int | None = Field(default=None, ge=0)
+    rail_roi_enabled: bool | None = None
 
 
 class YoloDatasetRequest(BaseModel):
@@ -87,6 +106,10 @@ class YoloDatasetRequest(BaseModel):
     output_dir: str
     val_fraction: float = Field(default=0.2, ge=0.0, le=0.8)
     seed: int = 42
+    tiled: bool = False
+    tile_size: int = Field(default=640, ge=64)
+    tile_stride: int = Field(default=512, ge=32)
+    min_box_visibility: float = Field(default=0.25, ge=0.01, le=1.0)
 
 
 class YoloTrainRequest(BaseModel):
@@ -96,7 +119,7 @@ class YoloTrainRequest(BaseModel):
     imgsz: int = Field(default=1280, ge=320)
     batch: int = Field(default=4, ge=1)
     device: str = "cpu"
-    project: str = "runs/lenta"
+    project: str | None = None
     name: str = "price_tag_yolo"
 
 
@@ -115,6 +138,13 @@ def predict_path(request: PathPredictionRequest) -> dict[str, object]:
         yolo_weights=request.yolo_weights,
         enable_ocr=request.enable_ocr,
         enable_qr=request.enable_qr,
+        tiled_yolo=request.tiled_yolo,
+        tile_size=request.tile_size,
+        tile_stride=request.tile_stride,
+        max_tiles_per_frame=request.max_tiles_per_frame,
+        rail_roi_enabled=request.rail_roi_enabled,
+        crop_phash_dedup=request.crop_phash_dedup,
+        derive_qr_fields_when_missing=request.derive_qr_fields_when_missing,
         save_crops=request.save_crops,
     )
     return result
@@ -129,6 +159,13 @@ async def predict_video(
     yolo_weights: str | None = YOLO_WEIGHTS_FORM_PARAM,
     enable_ocr: bool | None = ENABLE_OCR_FORM_PARAM,
     enable_qr: bool | None = ENABLE_QR_FORM_PARAM,
+    tiled_yolo: bool | None = TILED_YOLO_FORM_PARAM,
+    tile_size: int | None = TILE_SIZE_FORM_PARAM,
+    tile_stride: int | None = TILE_STRIDE_FORM_PARAM,
+    max_tiles_per_frame: int | None = MAX_TILES_FORM_PARAM,
+    rail_roi_enabled: bool | None = RAIL_ROI_FORM_PARAM,
+    crop_phash_dedup: bool | None = CROP_PHASH_DEDUP_FORM_PARAM,
+    derive_qr_fields_when_missing: bool | None = DERIVE_QR_FIELDS_FORM_PARAM,
     save_crops: bool = SAVE_CROPS_FORM_PARAM,
 ) -> dict[str, object]:
     if not file.filename or not file.filename.lower().endswith(".mp4"):
@@ -147,6 +184,13 @@ async def predict_video(
         yolo_weights=yolo_weights,
         enable_ocr=enable_ocr,
         enable_qr=enable_qr,
+        tiled_yolo=tiled_yolo,
+        tile_size=tile_size,
+        tile_stride=tile_stride,
+        max_tiles_per_frame=max_tiles_per_frame,
+        rail_roi_enabled=rail_roi_enabled,
+        crop_phash_dedup=crop_phash_dedup,
+        derive_qr_fields_when_missing=derive_qr_fields_when_missing,
         save_crops=save_crops,
     )
 
@@ -159,6 +203,11 @@ def evaluate_public(request: EvaluationRequest) -> dict[str, object]:
         sample_fps=request.sample_fps,
         max_frames=request.max_frames,
         yolo_weights=request.yolo_weights,
+        tiled_yolo=request.tiled_yolo,
+        tile_size=request.tile_size,
+        tile_stride=request.tile_stride,
+        max_tiles_per_frame=request.max_tiles_per_frame,
+        rail_roi_enabled=request.rail_roi_enabled,
     )
     return run_public_evaluation(Path(request.data_dir), output_dir, config)
 
@@ -170,6 +219,10 @@ def create_yolo_dataset(request: YoloDatasetRequest) -> dict[str, object]:
         output_dir=Path(request.output_dir),
         val_fraction=request.val_fraction,
         seed=request.seed,
+        tiled=request.tiled,
+        tile_size=request.tile_size,
+        tile_stride=request.tile_stride,
+        min_box_visibility=request.min_box_visibility,
     )
     return result.__dict__
 
@@ -209,6 +262,13 @@ def run_pipeline(
     yolo_weights: str | None,
     enable_ocr: bool | None,
     enable_qr: bool | None,
+    tiled_yolo: bool | None,
+    tile_size: int | None,
+    tile_stride: int | None,
+    max_tiles_per_frame: int | None,
+    rail_roi_enabled: bool | None,
+    crop_phash_dedup: bool | None,
+    derive_qr_fields_when_missing: bool | None,
     save_crops: bool,
 ) -> dict[str, object]:
     config = PipelineConfig.from_mode(
@@ -218,6 +278,13 @@ def run_pipeline(
         yolo_weights=yolo_weights,
         enable_ocr=enable_ocr,
         enable_qr=enable_qr,
+        tiled_yolo=tiled_yolo,
+        tile_size=tile_size,
+        tile_stride=tile_stride,
+        max_tiles_per_frame=max_tiles_per_frame,
+        rail_roi_enabled=rail_roi_enabled,
+        crop_phash_dedup=crop_phash_dedup,
+        derive_qr_fields_when_missing=derive_qr_fields_when_missing,
         save_crops=save_crops,
     )
     try:

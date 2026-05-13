@@ -6,7 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .media import bbox_iou, import_cv2
+from .candidates import iter_tiles
+from .media import BBox, bbox_iou, import_cv2
 from .pipeline import DEFAULT_DATA_DIR, discover_labeled_sequences, parse_coord
 from .schema import read_records_csv
 
@@ -25,6 +26,10 @@ def build_yolo_dataset(
     output_dir: Path = Path("datasets/lenta_price_tags"),
     val_fraction: float = 0.2,
     seed: int = 42,
+    tiled: bool = False,
+    tile_size: int = 640,
+    tile_stride: int = 512,
+    min_box_visibility: float = 0.25,
 ) -> YoloDatasetBuildResult:
     """Build a YOLO detection dataset from arbitrary public CSV/video names."""
 
@@ -69,24 +74,29 @@ def build_yolo_dataset(
         if not ok or frame is None:
             continue
 
-        height, width = frame.shape[:2]
         safe_name = sanitize_name(f"{sequence_name}_{timestamp_ms:08d}")
-        image_path = image_dirs[split] / f"{safe_name}.jpg"
-        label_path = label_dirs[split] / f"{safe_name}.txt"
-
-        labels: list[str] = []
-        for row in rows:
-            yolo_box = record_to_yolo(row, width, height)
-            if yolo_box is None:
-                continue
-            labels.append("0 " + " ".join(f"{value:.6f}" for value in yolo_box))
-        labels = deduplicate_labels(labels)
-        if not labels:
-            continue
-        cv2.imwrite(str(image_path), frame)
-        label_path.write_text("\n".join(labels) + "\n", encoding="utf-8")
-        image_counts[split] += 1
-        label_count += len(labels)
+        if tiled:
+            written_images, written_labels = write_tiled_training_frame(
+                cv2=cv2,
+                frame=frame,
+                rows=rows,
+                image_dir=image_dirs[split],
+                label_dir=label_dirs[split],
+                safe_name=safe_name,
+                tile_size=tile_size,
+                tile_stride=tile_stride,
+                min_box_visibility=min_box_visibility,
+            )
+        else:
+            written_images, written_labels = write_full_training_frame(
+                cv2=cv2,
+                frame=frame,
+                rows=rows,
+                image_path=image_dirs[split] / f"{safe_name}.jpg",
+                label_path=label_dirs[split] / f"{safe_name}.txt",
+            )
+        image_counts[split] += written_images
+        label_count += written_labels
 
     data_yaml = output_dir / "data.yaml"
     data_yaml.write_text(
@@ -118,7 +128,7 @@ def train_yolo_detector(
     imgsz: int = 1280,
     batch: int = 4,
     device: str = "cpu",
-    project: str = "runs/lenta",
+    project: str | None = None,
     name: str = "price_tag_yolo",
 ) -> Any:
     try:
@@ -132,7 +142,7 @@ def train_yolo_detector(
         imgsz=imgsz,
         batch=batch,
         device=device,
-        project=project,
+        project=project or str(DEFAULT_DATA_DIR.parent / "runs" / "detect"),
         name=name,
     )
 
@@ -142,6 +152,13 @@ def record_to_yolo(
     width: int,
     height: int,
 ) -> tuple[float, float, float, float] | None:
+    bbox = record_to_bbox(row, width, height)
+    if bbox is None:
+        return None
+    return bbox_to_yolo(bbox, width, height)
+
+
+def record_to_bbox(row: dict[str, str], width: int, height: int) -> BBox | None:
     x_min = parse_coord(row.get("x_min"))
     y_min = parse_coord(row.get("y_min"))
     x_max = parse_coord(row.get("x_max"))
@@ -152,16 +169,119 @@ def record_to_yolo(
     x_max = max(0.0, min(float(width), x_max))
     y_min = max(0.0, min(float(height), y_min))
     y_max = max(0.0, min(float(height), y_max))
-    box_w = x_max - x_min
-    box_h = y_max - y_min
-    if box_w < 3 or box_h < 3:
+    bbox = BBox(x_min, y_min, x_max, y_max)
+    if bbox.width < 3 or bbox.height < 3:
+        return None
+    return bbox
+
+
+def bbox_to_yolo(
+    bbox: BBox,
+    width: int,
+    height: int,
+) -> tuple[float, float, float, float] | None:
+    if width <= 0 or height <= 0 or bbox.width < 3 or bbox.height < 3:
         return None
     return (
-        (x_min + box_w / 2.0) / width,
-        (y_min + box_h / 2.0) / height,
-        box_w / width,
-        box_h / height,
+        (bbox.x_min + bbox.width / 2.0) / width,
+        (bbox.y_min + bbox.height / 2.0) / height,
+        bbox.width / width,
+        bbox.height / height,
     )
+
+
+def write_full_training_frame(
+    cv2: Any,
+    frame: Any,
+    rows: list[dict[str, str]],
+    image_path: Path,
+    label_path: Path,
+) -> tuple[int, int]:
+    height, width = frame.shape[:2]
+    labels: list[str] = []
+    for row in rows:
+        yolo_box = record_to_yolo(row, width, height)
+        if yolo_box is None:
+            continue
+        labels.append("0 " + " ".join(f"{value:.6f}" for value in yolo_box))
+    labels = deduplicate_labels(labels)
+    if not labels:
+        return 0, 0
+    cv2.imwrite(str(image_path), frame)
+    label_path.write_text("\n".join(labels) + "\n", encoding="utf-8")
+    return 1, len(labels)
+
+
+def write_tiled_training_frame(
+    cv2: Any,
+    frame: Any,
+    rows: list[dict[str, str]],
+    image_dir: Path,
+    label_dir: Path,
+    safe_name: str,
+    tile_size: int,
+    tile_stride: int,
+    min_box_visibility: float,
+) -> tuple[int, int]:
+    height, width = frame.shape[:2]
+    source_boxes = [
+        bbox for bbox in (record_to_bbox(row, width, height) for row in rows) if bbox is not None
+    ]
+    if not source_boxes:
+        return 0, 0
+
+    written_images = 0
+    written_labels = 0
+    for tile_index, (x_min, y_min, x_max, y_max) in enumerate(
+        iter_tiles(width, height, tile_size, tile_stride, max_tiles=0)
+    ):
+        tile_box = BBox(float(x_min), float(y_min), float(x_max), float(y_max))
+        tile_width = max(1, x_max - x_min)
+        tile_height = max(1, y_max - y_min)
+        labels: list[str] = []
+
+        for source_box in source_boxes:
+            clipped = clip_bbox(source_box, tile_box)
+            if clipped is None:
+                continue
+            visibility = clipped.area / max(1.0, source_box.area)
+            if visibility < min_box_visibility:
+                continue
+            local_box = BBox(
+                clipped.x_min - x_min,
+                clipped.y_min - y_min,
+                clipped.x_max - x_min,
+                clipped.y_max - y_min,
+            )
+            yolo_box = bbox_to_yolo(local_box, tile_width, tile_height)
+            if yolo_box is None:
+                continue
+            labels.append("0 " + " ".join(f"{value:.6f}" for value in yolo_box))
+
+        labels = deduplicate_labels(labels)
+        if not labels:
+            continue
+        tile_image = frame[y_min:y_max, x_min:x_max]
+        image_path = image_dir / f"{safe_name}_tile_{tile_index:03d}.jpg"
+        label_path = label_dir / f"{safe_name}_tile_{tile_index:03d}.txt"
+        cv2.imwrite(str(image_path), tile_image)
+        label_path.write_text("\n".join(labels) + "\n", encoding="utf-8")
+        written_images += 1
+        written_labels += len(labels)
+
+    return written_images, written_labels
+
+
+def clip_bbox(bbox: BBox, boundary: BBox) -> BBox | None:
+    clipped = BBox(
+        max(bbox.x_min, boundary.x_min),
+        max(bbox.y_min, boundary.y_min),
+        min(bbox.x_max, boundary.x_max),
+        min(bbox.y_max, boundary.y_max),
+    )
+    if clipped.width < 3 or clipped.height < 3:
+        return None
+    return clipped
 
 
 def deduplicate_labels(labels: list[str]) -> list[str]:

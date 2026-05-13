@@ -7,6 +7,14 @@ from typing import Any
 from .qr_tools import QRDecode
 from .schema import ABSENT_VALUE, empty_record, normalize_value
 from .text_reader import TextLine
+from .validators import (
+    normalize_barcode,
+    normalize_datetime,
+    normalize_discount,
+    normalize_price,
+    normalize_special_symbol,
+    validate_barcode,
+)
 
 PRICE_RE = re.compile(r"(?<!\d)(\d{1,5})\s*[,.]\s*(\d{2})(?![\dA-Za-z\u0400-\u04FF])")
 SPLIT_PRICE_RE = re.compile(r"(?<!\d)(\d{1,5})\s+(\d{2})(?![\dA-Za-z\u0400-\u04FF])")
@@ -47,22 +55,30 @@ class PriceTagFieldExtractor:
         record.update(qr_fields)
         record["barcode"] = first_value(qr_fields.get("qr_code_barcode"), self._barcode(text))
         record["id_sku"] = self._sku(text, record["barcode"])
-        record["print_datetime"] = self._datetime(text)
+        record["print_datetime"] = normalize_datetime(self._datetime(text))
         record["code"] = first_value(self._zone_code(text), ABSENT_VALUE)
         record["additional_info"] = first_value(self._additional_info(text), ABSENT_VALUE)
-        record["special_symbols"] = first_value(self._special_symbols(text), ABSENT_VALUE)
+        record["special_symbols"] = first_value(
+            normalize_special_symbol(self._special_symbols(text)),
+            ABSENT_VALUE,
+        )
         record["product_name"] = self._product_name(item.text_lines)
 
         prices = self._prices(text)
-        record["price_default"] = first_value(qr_fields.get("price1_qr"), price_at(prices, "max"))
+        record["price_default"] = normalize_price(
+            first_value(qr_fields.get("price1_qr"), price_at(prices, "max"))
+        )
         record["price_card"] = first_value(
             qr_fields.get("price4_qr"),
             qr_fields.get("price2_qr"),
             price_at(prices, "min"),
         )
-        record["price_discount"] = first_value(qr_fields.get("action_price_qr"), ABSENT_VALUE)
+        record["price_card"] = normalize_price(record["price_card"])
+        record["price_discount"] = normalize_price(
+            first_value(qr_fields.get("action_price_qr"), ABSENT_VALUE)
+        )
         record["discount_amount"] = first_value(
-            self._discount_amount(text),
+            normalize_discount(self._discount_amount(text)),
             self._computed_discount(record["price_default"], record["price_card"]),
             ABSENT_VALUE,
         )
@@ -82,7 +98,10 @@ class PriceTagFieldExtractor:
 
     def _barcode(self, text: str) -> str:
         match = EAN_RE.search(text)
-        return match.group(1) if match else ""
+        if not match:
+            return ""
+        barcode = normalize_barcode(match.group(1))
+        return barcode if validate_barcode(barcode) else ""
 
     def _sku(self, text: str, barcode: str) -> str:
         for match in SKU_RE.finditer(text):
