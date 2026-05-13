@@ -230,7 +230,18 @@ debug tracks              видно, почему строка CSV получи
   "tiled": true,
   "tile_size": 640,
   "tile_stride": 512,
-  "min_box_visibility": 0.25
+  "min_box_visibility": 0.25,
+  "centered_tiles_per_box": 3,
+  "background_tiles_per_frame": 2,
+  "propagate_frames": 2,
+  "template_match_threshold": 0.68,
+  "template_search_pad": 64,
+  "template_min_std": 14.0,
+  "template_backward_iou": 0.55,
+  "template_motion_tolerance": 35.0,
+  "template_edge_margin": 6,
+  "propagate_val": false,
+  "hash_split": true
 }
 ```
 
@@ -244,9 +255,72 @@ labels/val
 data.yaml
 ```
 
-Логика tiled dataset: кадр берется по `frame_timestamp` из CSV, режется на тайлы,
-bbox клипается границами тайла и переводится в YOLO-формат. Тайлы без ценников не
-сохраняются.
+Логика tiled dataset: кадр берется по `frame_timestamp` из CSV, режется на сеточные
+тайлы, затем дополнительно создаются `focus`-тайлы вокруг каждого bbox. Bbox
+клипается границами тайла и переводится в YOLO-формат. Тайлы без ценников по
+умолчанию не сохраняются.
+
+`centered_tiles_per_box` увеличивает supervised-датасет без ручной разметки:
+каждый размеченный ценник дает несколько центрированных тайлов с небольшими
+сдвигами. Если нужно больше стабильности на маленьком датасете, можно поставить
+`tile_stride=320` и `centered_tiles_per_box=5`.
+
+`propagate_frames` автоматически расширяет разметку на соседние кадры через
+template tracking: bbox из CSV переносится на соседний кадр, если OpenCV
+`matchTemplate` дает score не ниже `template_match_threshold`. Это использует
+видео сильнее, но не требует ручной разметки. Для чистой разметки лучше начинать
+со строгого режима: мало соседних кадров, высокий threshold, backward-check и
+чистый validation без propagation.
+
+```json
+{
+  "tiled": true,
+  "tile_size": 640,
+  "tile_stride": 512,
+  "centered_tiles_per_box": 1,
+  "background_tiles_per_frame": 2,
+  "propagate_frames": 2,
+  "template_match_threshold": 0.68,
+  "template_search_pad": 64,
+  "template_min_std": 14.0,
+  "template_backward_iou": 0.55,
+  "template_motion_tolerance": 35.0,
+  "template_edge_margin": 6,
+  "propagate_val": false,
+  "hash_split": true
+}
+```
+
+Если после просмотра HTML-превью bbox всё равно плывут, повышайте
+`template_match_threshold` до `0.72-0.78` или ставьте `propagate_frames=0`.
+
+## Просмотр YOLO-разметки
+
+Чтобы глазами проверить bbox на изображениях, соберите HTML-галерею:
+
+```powershell
+uv run ml-view-annotations `
+  --dataset F:/lenta_price_vision/packages/ml/src/ml/runs/lenta_yolo_propagated_medium_dataset/data.yaml `
+  --split train `
+  --limit 200 `
+  --out-dir F:/lenta_price_vision/packages/ml/src/ml/runs/annotation_preview_train
+```
+
+Для validation split:
+
+```powershell
+uv run ml-view-annotations `
+  --dataset F:/lenta_price_vision/packages/ml/src/ml/runs/lenta_yolo_propagated_medium_dataset/data.yaml `
+  --split val `
+  --limit 200 `
+  --out-dir F:/lenta_price_vision/packages/ml/src/ml/runs/annotation_preview_val
+```
+
+Открыть файл:
+
+```text
+F:/lenta_price_vision/packages/ml/src/ml/runs/annotation_preview_train/index.html
+```
 
 ## Обучение YOLO
 

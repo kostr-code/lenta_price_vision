@@ -54,6 +54,7 @@ dev = [
 
 [project.scripts]
 ml-service = "ml.main:run"
+ml-view-annotations = "ml.annotation_viewer:main"
 
 [build-system]
 requires = ["hatchling"]

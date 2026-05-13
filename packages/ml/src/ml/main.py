@@ -110,6 +110,19 @@ class YoloDatasetRequest(BaseModel):
     tile_size: int = Field(default=640, ge=64)
     tile_stride: int = Field(default=512, ge=32)
     min_box_visibility: float = Field(default=0.25, ge=0.01, le=1.0)
+    centered_tiles_per_box: int = Field(default=3, ge=0, le=12)
+    background_tiles_per_frame: int = Field(default=0, ge=0, le=32)
+    propagate_frames: int = Field(default=0, ge=0, le=30)
+    template_match_threshold: float = Field(default=0.42, ge=0.0, le=1.0)
+    template_search_pad: int = Field(default=80, ge=0, le=512)
+    template_min_std: float = Field(default=12.0, ge=0.0, le=255.0)
+    template_backward_iou: float = Field(default=0.45, ge=0.0, le=1.0)
+    template_motion_tolerance: float = Field(default=55.0, ge=0.0, le=512.0)
+    template_edge_margin: int = Field(default=3, ge=0, le=32)
+    template_min_edge_density: float = Field(default=0.035, ge=0.0, le=1.0)
+    template_min_peak_margin: float = Field(default=0.04, ge=0.0, le=1.0)
+    propagate_val: bool = False
+    hash_split: bool = True
 
 
 class YoloTrainRequest(BaseModel):
@@ -223,6 +236,19 @@ def create_yolo_dataset(request: YoloDatasetRequest) -> dict[str, object]:
         tile_size=request.tile_size,
         tile_stride=request.tile_stride,
         min_box_visibility=request.min_box_visibility,
+        centered_tiles_per_box=request.centered_tiles_per_box,
+        background_tiles_per_frame=request.background_tiles_per_frame,
+        propagate_frames=request.propagate_frames,
+        template_match_threshold=request.template_match_threshold,
+        template_search_pad=request.template_search_pad,
+        template_min_std=request.template_min_std,
+        template_backward_iou=request.template_backward_iou,
+        template_motion_tolerance=request.template_motion_tolerance,
+        template_edge_margin=request.template_edge_margin,
+        template_min_edge_density=request.template_min_edge_density,
+        template_min_peak_margin=request.template_min_peak_margin,
+        propagate_val=request.propagate_val,
+        hash_split=request.hash_split,
     )
     return result.__dict__
 
