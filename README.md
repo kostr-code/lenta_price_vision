@@ -1,20 +1,25 @@
 # lenta_price_vision
 
-Retail price-tag recognition stack (backend + ML + mock store API).
+Retail price-tag recognition stack:
 
-## What runs today
+- `backend` (FastAPI gateway)
+- `ml` (FastAPI inference service)
+- `mock-store-api` (mock integration service)
+- `frontend` (React + Vite web UI)
 
-- `backend` (FastAPI): `http://localhost:8001`
-- `ml` (FastAPI): `http://localhost:8000`
-- `mock-store-api` (FastAPI): `http://localhost:8002`
-- `postgres`: `localhost:5433`
-- `frontend` (PySide6 desktop app): local desktop window
+## Services and URLs
+
+- Frontend: `http://localhost:5173`
+- Backend: `http://localhost:8001`
+- ML: `http://localhost:8000`
+- Mock Store API: `http://localhost:8002`
+- Postgres: `localhost:5433`
 
 ## Prerequisites
 
 - Docker + Docker Compose
-- `uv` (for local non-Docker run)
-- Python `3.11.x` (for local non-Docker run)
+- `uv` (for Python local runs)
+- Node.js `20+` and npm (for frontend local run)
 
 ## Quick Launch (Docker, recommended)
 
@@ -24,7 +29,7 @@ Retail price-tag recognition stack (backend + ML + mock store API).
 Copy-Item .env.example .env
 ```
 
-2. Start dev stack:
+2. Start development stack:
 
 ```powershell
 docker compose `
@@ -41,8 +46,9 @@ curl http://localhost:8000/health
 curl http://localhost:8002/health
 ```
 
-4. Open API docs:
+4. Open apps:
 
+- Frontend UI: `http://localhost:5173`
 - Backend docs: `http://localhost:8001/docs`
 - ML docs: `http://localhost:8000/docs`
 
@@ -66,7 +72,7 @@ make down
 
 ## Local Launch (without Docker)
 
-1. Install dependencies:
+1. Install Python dependencies:
 
 ```powershell
 uv sync
@@ -75,7 +81,7 @@ uv sync
 cd ../..
 ```
 
-2. Start services in separate terminals:
+2. Start backend services in separate terminals:
 
 Terminal 1 (ML):
 
@@ -99,37 +105,28 @@ cd packages/mock_store_api
 uv run mock-store-api
 ```
 
-3. Start frontend in a 4th terminal:
+3. Start frontend:
 
 ```powershell
 cd packages/frontend
-uv run frontend
+npm install
+npm run dev
 ```
 
-4. Verify:
+4. Open frontend at `http://localhost:5173`.
 
-```powershell
-curl http://localhost:8001/health
-```
+## Frontend to backend integration
 
-In the frontend window:
+Frontend uses backend endpoints:
 
-1. Set backend URL (`http://localhost:8001` by default).
-2. Select a video file.
-3. Click `Run Recognition`.
-4. Save CSV/debug artifacts using `Save CSV` and `Save Debug JSON`.
-
-## Main backend endpoints for frontend integration
-
-- `POST /api/v1/predict/video` (upload video and run recognition)
-- `POST /api/v1/predict/path` (run by local file path on ML host)
+- `POST /api/v1/predict/video`
 - `GET /api/v1/schema`
 - `GET /api/v1/datasets`
 - `GET /api/v1/download/{run_id}/{filename}`
 
-The backend proxies ML responses and adds:
+Backend response includes:
 
 - `backend_download`
 - `backend_debug_download`
 
-so a UI can download artifacts through backend directly.
+Frontend uses these links to download CSV/debug files.

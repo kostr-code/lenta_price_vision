@@ -63,3 +63,23 @@ services:
         "8002",
         "--reload"
       ]
+
+  frontend:
+    image: node:20-alpine
+    container_name: price-audit-frontend-dev
+    working_dir: /app/packages/frontend
+    environment:
+      VITE_BACKEND_URL: ${VITE_BACKEND_URL:-http://localhost:8001}
+    volumes:
+      - ./:/app
+    ports:
+      - "${FRONTEND_PORT:-5173}:5173"
+    depends_on:
+      backend:
+        condition: service_healthy
+    command:
+      [
+        "sh",
+        "-lc",
+        "npm install && npm run dev -- --host 0.0.0.0 --port 5173"
+      ]
