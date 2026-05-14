@@ -145,6 +145,42 @@ async def predict_video(
     return body
 
 
+@app.post("/api/v1/predict/image")
+async def predict_image(
+    file: UploadFile = UPLOAD_FILE,
+    mode: str = FORM_MODE,
+    yolo_weights: str | None = FORM_YOLO_WEIGHTS,
+    enable_ocr: bool | None = FORM_ENABLE_OCR,
+    enable_qr: bool | None = FORM_ENABLE_QR,
+    save_crops: bool = FORM_SAVE_CROPS,
+) -> dict[str, Any]:
+    payload = await file.read()
+    guard_upload_size(payload)
+
+    files = {
+        "file": (
+            file.filename or "input.jpg",
+            payload,
+            file.content_type or "image/jpeg",
+        )
+    }
+    form_data: dict[str, str] = {
+        "mode": mode,
+        "save_crops": bool_to_form(save_crops),
+    }
+    if yolo_weights:
+        form_data["yolo_weights"] = yolo_weights
+    if enable_ocr is not None:
+        form_data["enable_ocr"] = bool_to_form(enable_ocr)
+    if enable_qr is not None:
+        form_data["enable_qr"] = bool_to_form(enable_qr)
+
+    response = await request_ml("POST", "/predict/image", data=form_data, files=files)
+    body = response.json()
+    enrich_with_backend_downloads(body)
+    return body
+
+
 @app.post("/api/v1/predict/path")
 async def predict_path(request: PathPredictionRequest) -> dict[str, Any]:
     response = await request_ml("POST", "/predict/path", json=request.model_dump(exclude_none=True))

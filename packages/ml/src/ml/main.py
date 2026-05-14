@@ -31,6 +31,7 @@ YOLO_WEIGHTS_FORM_PARAM = Form(None)
 ENABLE_OCR_FORM_PARAM = Form(None)
 ENABLE_QR_FORM_PARAM = Form(None)
 SAVE_CROPS_FORM_PARAM = Form(False)
+SUPPORTED_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
 app = FastAPI(title="Price Tag Audit ML Service")
 
 
@@ -151,6 +152,42 @@ async def predict_video(
     )
 
 
+@app.post("/predict/image")
+async def predict_image(
+    file: UploadFile = UPLOAD_FILE_PARAM,
+    mode: str = MODE_FORM_PARAM,
+    yolo_weights: str | None = YOLO_WEIGHTS_FORM_PARAM,
+    enable_ocr: bool | None = ENABLE_OCR_FORM_PARAM,
+    enable_qr: bool | None = ENABLE_QR_FORM_PARAM,
+    save_crops: bool = SAVE_CROPS_FORM_PARAM,
+) -> dict[str, object]:
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Upload an image file")
+    suffix = Path(file.filename).suffix.lower()
+    content_type = (file.content_type or "").lower()
+    if not is_supported_image_upload(suffix, content_type):
+        raise HTTPException(
+            status_code=400,
+            detail="Upload an image: .jpg, .jpeg, .png, .bmp, .webp, .tif, .tiff",
+        )
+
+    run_dir = new_run_dir(Path(file.filename).stem)
+    upload_path = run_dir / f"input{suffix or '.jpg'}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    with upload_path.open("wb") as stream:
+        shutil.copyfileobj(file.file, stream)
+
+    return run_image_pipeline(
+        image_path=upload_path,
+        output_dir=run_dir,
+        mode=mode,
+        yolo_weights=yolo_weights,
+        enable_ocr=enable_ocr,
+        enable_qr=enable_qr,
+        save_crops=save_crops,
+    )
+
+
 @app.post("/evaluate/public")
 def evaluate_public(request: EvaluationRequest) -> dict[str, object]:
     output_dir = Path(request.output_dir) if request.output_dir else new_run_dir("eval_public")
@@ -231,6 +268,39 @@ def run_pipeline(
     if result.debug_json:
         response["debug_download"] = download_hint(Path(result.debug_json))
     return response
+
+
+def run_image_pipeline(
+    image_path: Path,
+    output_dir: Path,
+    mode: str,
+    yolo_weights: str | None,
+    enable_ocr: bool | None,
+    enable_qr: bool | None,
+    save_crops: bool,
+) -> dict[str, object]:
+    config = PipelineConfig.from_mode(
+        mode,
+        yolo_weights=yolo_weights,
+        enable_ocr=enable_ocr,
+        enable_qr=enable_qr,
+        save_crops=save_crops,
+    )
+    try:
+        result = RetailShelfPipeline(config).run_image(image_path, output_dir)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    response: dict[str, object] = result.__dict__.copy()
+    response["csv_summary"] = summarize_csv(Path(result.output_csv))
+    response["download"] = download_hint(Path(result.output_csv))
+    if result.debug_json:
+        response["debug_download"] = download_hint(Path(result.debug_json))
+    return response
+
+
+def is_supported_image_upload(suffix: str, content_type: str) -> bool:
+    return suffix in SUPPORTED_IMAGE_SUFFIXES or content_type.startswith("image/")
 
 
 def new_run_dir(prefix: str) -> Path:

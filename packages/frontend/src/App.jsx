@@ -44,9 +44,23 @@ function prettyJson(value) {
   return JSON.stringify(value, null, 2);
 }
 
+function isImageFile(file) {
+  if (!file) {
+    return false;
+  }
+  const contentType = String(file.type ?? "").toLowerCase();
+  if (contentType.startsWith("image/")) {
+    return true;
+  }
+  const name = String(file.name ?? "").toLowerCase();
+  return [".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"].some((suffix) =>
+    name.endsWith(suffix),
+  );
+}
+
 export default function App() {
   const [backendUrl, setBackendUrl] = useState(DEFAULT_BACKEND_URL);
-  const [videoFile, setVideoFile] = useState(null);
+  const [mediaFile, setMediaFile] = useState(null);
   const [mode, setMode] = useState("cpu_safe");
   const [overrideSampleFps, setOverrideSampleFps] = useState(true);
   const [sampleFps, setSampleFps] = useState("2.0");
@@ -59,6 +73,7 @@ export default function App() {
   const [status, setStatus] = useState("Idle");
   const [error, setError] = useState("");
   const [result, setResult] = useState(null);
+  const selectedIsImage = isImageFile(mediaFile);
 
   const summary = useMemo(() => {
     if (!result || typeof result !== "object") {
@@ -82,37 +97,46 @@ export default function App() {
       setError("Backend URL is required.");
       return;
     }
-    if (!videoFile) {
-      setError("Choose a video file before running recognition.");
+    if (!mediaFile) {
+      setError("Choose an image or video file before running recognition.");
       return;
     }
 
-    const parsedMaxFrames = Number.parseInt(maxFrames, 10);
-    const safeMaxFrames =
-      Number.isFinite(parsedMaxFrames) && parsedMaxFrames >= 0 ? parsedMaxFrames : 0;
+    const isImageUpload = isImageFile(mediaFile);
 
     const payload = new FormData();
-    payload.append("file", videoFile);
+    payload.append("file", mediaFile);
     payload.append("mode", mode);
-    payload.append("max_frames", String(safeMaxFrames));
     payload.append("enable_ocr", toFormBoolean(enableOcr));
     payload.append("enable_qr", toFormBoolean(enableQr));
     payload.append("save_crops", toFormBoolean(saveCrops));
 
-    if (overrideSampleFps) {
-      const parsedSampleFps = Number.parseFloat(sampleFps);
-      if (!Number.isFinite(parsedSampleFps) || parsedSampleFps <= 0) {
-        setError("Sample FPS must be a positive number.");
-        return;
+    if (!isImageUpload) {
+      const parsedMaxFrames = Number.parseInt(maxFrames, 10);
+      const safeMaxFrames =
+        Number.isFinite(parsedMaxFrames) && parsedMaxFrames >= 0 ? parsedMaxFrames : 0;
+      payload.append("max_frames", String(safeMaxFrames));
+
+      if (overrideSampleFps) {
+        const parsedSampleFps = Number.parseFloat(sampleFps);
+        if (!Number.isFinite(parsedSampleFps) || parsedSampleFps <= 0) {
+          setError("Sample FPS must be a positive number.");
+          return;
+        }
+        payload.append("sample_fps", String(parsedSampleFps));
       }
-      payload.append("sample_fps", String(parsedSampleFps));
     }
 
     setIsRunning(true);
-    setStatus("Uploading video and waiting for recognition...");
+    setStatus(
+      isImageUpload
+        ? "Uploading image and waiting for recognition..."
+        : "Uploading video and waiting for recognition...",
+    );
 
     try {
-      const response = await fetch(joinUrl(normalizedBackend, "/api/v1/predict/video"), {
+      const endpoint = isImageUpload ? "/api/v1/predict/image" : "/api/v1/predict/video";
+      const response = await fetch(joinUrl(normalizedBackend, endpoint), {
         method: "POST",
         body: payload,
       });
@@ -171,7 +195,8 @@ export default function App() {
           <p className="eyebrow">Lenta Price Vision</p>
           <h1>React Operator Console</h1>
           <p className="hero-copy">
-            Upload robot video, run recognition through backend, and download generated artifacts.
+            Upload a shelf photo or robot video, run recognition through backend, and download
+            generated artifacts.
           </p>
         </header>
 
@@ -190,15 +215,18 @@ export default function App() {
             </label>
 
             <label className="field">
-              <span>Video file</span>
+              <span>Image or video file</span>
               <input
                 type="file"
-                accept="video/mp4,video/*"
-                onChange={(event) => setVideoFile(event.target.files?.[0] ?? null)}
+                accept="image/*,video/mp4,video/*,.jpg,.jpeg,.png,.bmp,.webp,.tif,.tiff"
+                onChange={(event) => setMediaFile(event.target.files?.[0] ?? null)}
                 required
               />
             </label>
-            <p className="hint">Selected: {videoFile ? videoFile.name : "none"}</p>
+            <p className="hint">
+              Selected: {mediaFile ? mediaFile.name : "none"}{" "}
+              {selectedIsImage ? "(image mode)" : mediaFile ? "(video mode)" : ""}
+            </p>
           </section>
 
           <section className="panel">
@@ -220,6 +248,7 @@ export default function App() {
                   step="1"
                   value={maxFrames}
                   onChange={(event) => setMaxFrames(event.target.value)}
+                  disabled={selectedIsImage}
                 />
               </label>
             </div>
@@ -229,6 +258,7 @@ export default function App() {
                 type="checkbox"
                 checked={overrideSampleFps}
                 onChange={(event) => setOverrideSampleFps(event.target.checked)}
+                disabled={selectedIsImage}
               />
               <span>Override sample FPS</span>
             </label>
@@ -241,9 +271,12 @@ export default function App() {
                 step="0.1"
                 value={sampleFps}
                 onChange={(event) => setSampleFps(event.target.value)}
-                disabled={!overrideSampleFps}
+                disabled={selectedIsImage || !overrideSampleFps}
               />
             </label>
+            {selectedIsImage ? (
+              <p className="hint">Photo selected: frame sampling options are skipped.</p>
+            ) : null}
 
             <div className="toggle-grid">
               <label className="toggle-row">
@@ -287,7 +320,7 @@ export default function App() {
                 <p className="metric-value">{summary.rows}</p>
               </div>
               <div>
-                <p className="metric-label">Frames Seen</p>
+                <p className="metric-label">Frames/Images Seen</p>
                 <p className="metric-value">{summary.framesSeen}</p>
               </div>
               <div>

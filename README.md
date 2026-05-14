@@ -120,6 +120,7 @@ npm run dev
 Frontend uses backend endpoints:
 
 - `POST /api/v1/predict/video`
+- `POST /api/v1/predict/image`
 - `GET /api/v1/schema`
 - `GET /api/v1/datasets`
 - `GET /api/v1/download/{run_id}/{filename}`
@@ -130,3 +131,6 @@ Backend response includes:
 - `backend_debug_download`
 
 Frontend uses these links to download CSV/debug files.
+
+Frontend file upload supports both video and image files. Video uploads are routed to
+`/api/v1/predict/video`, image uploads to `/api/v1/predict/image`.
