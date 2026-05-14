@@ -238,3 +238,23 @@ def video_metadata(video_path: Path) -> dict[str, float | int | str]:
         "height": height,
         "duration_ms": duration_ms,
     }
+
+
+def load_image(image_path: Path) -> Any:
+    cv2 = import_cv2()
+    image = cv2.imread(str(image_path))
+    if image is None:
+        raise FileNotFoundError(f"Could not open image: {image_path}")
+    return image
+
+
+def image_metadata(image_path: Path) -> dict[str, float | int | str]:
+    image = load_image(image_path)
+    height, width = image.shape[:2]
+    channels = int(image.shape[2]) if len(image.shape) >= 3 else 1
+    return {
+        "path": str(image_path),
+        "width": int(width),
+        "height": int(height),
+        "channels": channels,
+    }

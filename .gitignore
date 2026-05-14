@@ -241,3 +241,8 @@ outputs/
 *.avi
 *.mov
 *.mkv
+
+# Frontend (React)
+packages/frontend/node_modules/
+packages/frontend/dist/
+npm-debug.log*
