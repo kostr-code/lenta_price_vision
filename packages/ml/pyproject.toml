@@ -55,6 +55,8 @@ dev = [
 [project.scripts]
 ml-service = "ml.main:run"
 ml-view-annotations = "ml.annotation_viewer:main"
+ml-review-annotations = "ml.review_annotations:main"
+ml-infer-video = "ml.infer_video:main"
 
 [build-system]
 requires = ["hatchling"]

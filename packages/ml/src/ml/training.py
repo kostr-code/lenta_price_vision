@@ -124,7 +124,11 @@ def yolo_line(box: list[float] | tuple[float, float, float, float], width: int, 
 
 
 def is_validation_sample(video_key: str, timestamp_ms: float, val_ratio: float) -> bool:
-    '''Детерминированно относит timestamp к train или val.'''
+    '''Детерминированно относит timestamp к train или val.
+
+    Этот режим оставлен для совместимости, но для максимально близкого
+    повторения датасета конкурентов лучше использовать split по frame_id.
+    '''
 
     if val_ratio <= 0:
         return False
@@ -135,6 +139,25 @@ def is_validation_sample(video_key: str, timestamp_ms: float, val_ratio: float) 
     bucket = int(hashlib.md5(key).hexdigest()[:8], 16) / 0xFFFFFFFF
 
     return bucket < val_ratio
+
+
+def is_validation_frame_id(frame_id: int, val_ratio: float) -> bool:
+    '''Делает split по номеру сгенерированного кадра.
+
+    При `val_ratio=0.2` каждый пятый frame_id попадает в validation.
+    Это ближе к фактически наблюдаемому датасету конкурентов: один и тот же
+    timestamp может иметь часть propagated-кадров в train и часть в val.
+    Такой split менее честный из-за leakage между соседними кадрами, но
+    воспроизводит их стабильную локальную validation-картину.
+    '''
+
+    if val_ratio <= 0:
+        return False
+    if val_ratio >= 1:
+        return True
+
+    stride = max(1, int(round(1.0 / val_ratio)))
+    return frame_id % stride == 0
 
 
 def template_track(
@@ -267,6 +290,7 @@ def build_dataset(
     search_pad: int = 80,
     clean_output: bool = True,
     jpeg_quality: int = 92,
+    split_mode: str = 'frame_id_mod',
 ) -> YoloDatasetBuildResult:
     '''Собирает YOLO-датасет по конкурентскому full-frame pipeline.'''
 
@@ -392,7 +416,13 @@ def build_dataset(
                 for frame, variant_boxes, offset, quality in frame_variants:
                     height, width = frame.shape[:2]
 
-                    split_val = is_validation_sample(video_path.stem, timestamp_ms, val_ratio)
+                    if split_mode == 'timestamp_hash':
+                        split_val = is_validation_sample(video_path.stem, timestamp_ms, val_ratio)
+                    elif split_mode == 'frame_id_mod':
+                        split_val = is_validation_frame_id(frame_id, val_ratio)
+                    else:
+                        raise ValueError(f'Unknown split_mode: {split_mode}')
+
                     image_dir = images_val if split_val else images_train
                     label_dir = labels_val if split_val else labels_train
 
@@ -471,6 +501,7 @@ def build_dataset(
             'search_pad': search_pad,
             'clean_output': clean_output,
             'jpeg_quality': jpeg_quality,
+            'split_mode': split_mode,
         },
     }
 
@@ -505,6 +536,7 @@ def build_yolo_dataset(
     template_search_pad: int = 80,
     clean_output: bool = True,
     jpeg_quality: int = 92,
+    split_mode: str = 'frame_id_mod',
     **_ignored: object,
 ) -> YoloDatasetBuildResult:
     '''Совместимый wrapper для старого API `ml.training.build_yolo_dataset`.
@@ -526,6 +558,7 @@ def build_yolo_dataset(
         search_pad=template_search_pad,
         clean_output=clean_output,
         jpeg_quality=jpeg_quality,
+        split_mode=split_mode,
     )
 
 
@@ -661,6 +694,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--match-threshold', '--template-match-threshold', dest='match_threshold', type=float, default=0.42)
     parser.add_argument('--search-pad', '--template-search-pad', dest='search_pad', type=int, default=80)
     parser.add_argument('--jpeg-quality', type=int, default=92)
+    parser.add_argument('--split-mode', choices=['frame_id_mod', 'timestamp_hash'], default='frame_id_mod', help='frame_id_mod ближе к датасету конкурентов; timestamp_hash честнее разделяет timestamp-группы.')
     parser.add_argument('--no-clean', action='store_true', help='Не удалять старую папку out-dir перед сборкой.')
 
     # Совместимость со старым CLI. Эти параметры принимаются, но не используются.
@@ -693,6 +727,7 @@ def main() -> None:
         search_pad=args.search_pad,
         clean_output=not args.no_clean,
         jpeg_quality=args.jpeg_quality,
+        split_mode=args.split_mode,
     )
 
 

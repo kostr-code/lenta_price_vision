@@ -23,6 +23,9 @@ class PriceTagObservation:
     confidence: float
     sharpness: float = 0.0
     source: str = ""
+    track_id: int | None = None
+    crop_path: str | None = None
+    expanded_bbox: BBox | None = None
 
     @property
     def score(self) -> float:
@@ -31,12 +34,16 @@ class PriceTagObservation:
 
 @dataclass
 class PriceTagTrack:
+    track_id: int | None = None
     observations: list[PriceTagObservation] = field(default_factory=list)
     fused_record: dict[str, str] = field(default_factory=dict)
     field_voter: FieldVoter = field(default_factory=FieldVoter)
     last_frame_index: int = 0
+    best_crop_path: str | None = None
 
     def add(self, observation: PriceTagObservation) -> None:
+        if self.track_id is None:
+            self.track_id = observation.track_id
         self.observations.append(observation)
         self.field_voter.add_record(
             observation.record,
@@ -49,6 +56,8 @@ class PriceTagTrack:
         else:
             self.fused_record = merge_record_values(self.fused_record, observation.record)
         self.last_frame_index = observation.frame_index
+        if observation.crop_path and observation == self.best_observation:
+            self.best_crop_path = observation.crop_path
 
     @property
     def best_observation(self) -> PriceTagObservation:
@@ -64,10 +73,16 @@ class PriceTagTrack:
     def debug_summary(self) -> dict[str, Any]:
         best = self.best_observation
         return {
+            "track_id": self.track_id,
             "observations": len(self.observations),
             "best_timestamp": best.frame_timestamp,
             "best_bbox": list(best.bbox.as_int_tuple()),
+            "best_expanded_bbox": (
+                list(best.expanded_bbox.as_int_tuple()) if best.expanded_bbox else None
+            ),
             "best_score": round(best.score, 3),
+            "best_crop_path": self.best_crop_path,
+            "sources": sorted({observation.source for observation in self.observations}),
             "fields": self.field_voter.debug_summary(),
         }
 
@@ -91,7 +106,7 @@ class EvidenceFusionTracker:
         for observation in observations:
             track = self._find_track(observation, frame_index)
             if track is None:
-                track = PriceTagTrack()
+                track = PriceTagTrack(track_id=observation.track_id)
                 self.tracks.append(track)
             track.add(observation)
 
@@ -116,6 +131,11 @@ class EvidenceFusionTracker:
         observation: PriceTagObservation,
         frame_index: int,
     ) -> PriceTagTrack | None:
+        if observation.track_id is not None:
+            for track in self.tracks:
+                if track.track_id == observation.track_id:
+                    return track
+
         best_track: PriceTagTrack | None = None
         best_score = 0.0
         for track in self.tracks:

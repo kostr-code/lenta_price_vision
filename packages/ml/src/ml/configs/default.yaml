@@ -1,0 +1,60 @@
+detector:
+  weights: models/best.pt
+  imgsz: 1280
+  conf: 0.15
+  iou: 0.5
+  device: 0
+  enable_fallbacks: true
+  fallback_when_tracked: false
+
+sampling:
+  sample_fps: 2.0
+  accuracy_sample_fps: 4.0
+  skip_blurry: true
+  min_laplacian_var: 40.0
+
+tracking:
+  enabled: true
+  type: bytetrack
+  tracker_config: configs/bytetrack_price.yaml
+  min_track_hits: 1
+  track_buffer: 60
+
+crop:
+  expand_side_pad: 0.18
+  expand_top_pad: 0.10
+  expand_bottom_pad: 1.45
+  save_debug_crops: true
+  max_crops_per_track: 10
+
+enhancement:
+  upscale: 2
+  clahe: true
+  unsharp: true
+
+qr:
+  enabled: true
+  decoders:
+    - zxing
+    - pyzbar
+    - opencv
+
+ocr:
+  enabled: true
+  defer: true
+  top_k_crops_per_track: 5
+  use_paddleocr: false
+  use_tesseract_fallback: true
+
+fusion:
+  prefer_qr_fields: true
+  deduplicate_by:
+    - qr_code_barcode
+    - barcode
+    - id_sku
+    - track_id
+    - product_name_price
+
+output:
+  write_debug_json: true
+  write_debug_crops: true

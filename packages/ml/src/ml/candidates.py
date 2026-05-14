@@ -18,8 +18,9 @@ class PriceTagCandidate:
 @dataclass(frozen=True)
 class CandidateFinderConfig:
     yolo_weights: str | None = None
-    yolo_conf: float = 0.23
-    detector_imgsz: int = 1600
+    yolo_conf: float = 0.15
+    detector_iou: float = 0.5
+    detector_imgsz: int = 1280
     tiled_yolo: bool = False
     tile_size: int = 640
     tile_stride: int = 512
@@ -58,6 +59,15 @@ class PriceTagCandidateFinder:
         candidates.extend(self._find_with_color_geometry(image))
         return self._deduplicate(candidates)
 
+    def find_fallbacks(self, image: Any) -> list[PriceTagCandidate]:
+        candidates: list[PriceTagCandidate] = []
+        candidates.extend(self._find_with_qr_seeds(image))
+        candidates.extend(self._find_with_color_geometry(image))
+        return self._deduplicate(candidates)
+
+    def load_yolo_model(self) -> Any | None:
+        return self._load_yolo()
+
     def _find_with_yolo(self, image: Any) -> list[PriceTagCandidate]:
         model = self._load_yolo()
         if model is None:
@@ -69,6 +79,7 @@ class PriceTagCandidateFinder:
             results = model.predict(
                 image,
                 conf=self.config.yolo_conf,
+                iou=self.config.detector_iou,
                 imgsz=self.config.detector_imgsz,
                 verbose=False,
             )
@@ -108,6 +119,7 @@ class PriceTagCandidateFinder:
                 results = model.predict(
                     tile_image,
                     conf=self.config.yolo_conf,
+                    iou=self.config.detector_iou,
                     imgsz=self.config.detector_imgsz,
                     verbose=False,
                 )

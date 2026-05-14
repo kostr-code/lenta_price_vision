@@ -15,6 +15,7 @@ class TextLine:
 class TextReaderConfig:
     enabled: bool = True
     prefer_paddle: bool = True
+    use_tesseract_fallback: bool = True
     language: str = "ru"
     use_gpu: bool = False
 
@@ -26,6 +27,7 @@ class TextReader:
         self.config = config or TextReaderConfig()
         self._paddle_reader: Any | None = None
         self._paddle_error: str | None = None
+        self._paddle_disabled = False
         self._tesseract_error: str | None = None
 
     @property
@@ -33,7 +35,8 @@ class TextReader:
         return {
             "enabled": self.config.enabled,
             "paddle_loaded": self._paddle_reader is not None,
-            "paddle_error": self._paddle_error or "",
+            "paddle_error": compact_error(self._paddle_error),
+            "paddle_disabled": self._paddle_disabled,
             "tesseract_error": self._tesseract_error or "",
         }
 
@@ -44,12 +47,13 @@ class TextReader:
         lines: list[TextLine] = []
         if self.config.prefer_paddle:
             lines.extend(self._read_paddle(image))
-        lines.extend(self._read_tesseract(image))
-        if not lines and not self.config.prefer_paddle:
-            lines.extend(self._read_paddle(image))
+        if self.config.use_tesseract_fallback and (not lines or not self.config.prefer_paddle):
+            lines.extend(self._read_tesseract(image))
         return deduplicate_lines(lines)
 
     def _read_paddle(self, image: Any) -> list[TextLine]:
+        if self._paddle_disabled:
+            return []
         reader = self._load_paddle()
         if reader is None:
             return []
@@ -57,6 +61,7 @@ class TextReader:
             results = reader.ocr(image, cls=True)
         except Exception as exc:  # pragma: no cover - depends on OCR runtime
             self._paddle_error = str(exc)
+            self._paddle_disabled = True
             return []
 
         lines: list[TextLine] = []
@@ -124,25 +129,40 @@ class TextReader:
             rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             pil_image = Image.fromarray(rgb)
             lang = choose_tesseract_lang(pytesseract, self.config.language)
-            data = pytesseract.image_to_data(
-                pil_image,
-                lang=lang,
-                output_type=pytesseract.Output.DICT,
-                config="--psm 6",
-            )
         except Exception as exc:  # pragma: no cover - depends on tesseract binary
             self._tesseract_error = str(exc)
             return []
+
         lines: list[TextLine] = []
-        for text, confidence in zip(data.get("text", []), data.get("conf", []), strict=False):
-            cleaned = str(text).strip()
-            if not cleaned:
-                continue
-            try:
-                score = max(0.0, float(confidence) / 100.0)
-            except ValueError:
-                score = 0.0
-            lines.append(TextLine(cleaned, score, "tesseract"))
+        errors: list[str] = []
+        for variant_name, variant in tesseract_variants(pil_image, image):
+            for psm in (6, 11):
+                try:
+                    data = pytesseract.image_to_data(
+                        variant,
+                        lang=lang,
+                        output_type=pytesseract.Output.DICT,
+                        config=f"--psm {psm}",
+                    )
+                except Exception as exc:  # pragma: no cover - depends on tesseract binary
+                    errors.append(str(exc))
+                    continue
+                for text, confidence in zip(
+                    data.get("text", []),
+                    data.get("conf", []),
+                    strict=False,
+                ):
+                    cleaned = str(text).strip()
+                    if not cleaned:
+                        continue
+                    try:
+                        score = max(0.0, float(confidence) / 100.0)
+                    except ValueError:
+                        score = 0.0
+                    lines.append(TextLine(cleaned, score, f"tesseract:{variant_name}:psm{psm}"))
+        if not lines and errors:
+            self._tesseract_error = compact_error(errors[0])
+            return []
         self._tesseract_error = None
         return lines
 
@@ -170,6 +190,40 @@ def deduplicate_lines(lines: list[TextLine]) -> list[TextLine]:
         if current is None or line.confidence > current.confidence:
             by_text[key] = line
     return sorted(by_text.values(), key=lambda line: line.confidence, reverse=True)
+
+
+def compact_error(value: str | None, limit: int = 500) -> str:
+    if not value:
+        return ""
+    text = " ".join(str(value).split())
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "..."
+
+
+def tesseract_variants(pil_image: Any, bgr_image: Any) -> list[tuple[str, Any]]:
+    variants = [("enhanced_rgb", pil_image)]
+    try:
+        from PIL import Image
+
+        from .media import import_cv2
+
+        cv2 = import_cv2()
+        gray = cv2.cvtColor(bgr_image, cv2.COLOR_BGR2GRAY)
+        _threshold, otsu = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        adaptive = cv2.adaptiveThreshold(
+            gray,
+            255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY,
+            31,
+            7,
+        )
+        variants.append(("otsu", Image.fromarray(otsu)))
+        variants.append(("adaptive", Image.fromarray(adaptive)))
+    except Exception:
+        return variants
+    return variants
 
 
 def choose_tesseract_lang(pytesseract: Any, requested_language: str) -> str:

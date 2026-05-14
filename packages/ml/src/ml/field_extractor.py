@@ -156,6 +156,10 @@ class PriceTagFieldExtractor:
             return -2
         letters = sum(1 for char in value if char.isalpha())
         digits = sum(1 for char in value if char.isdigit())
+        has_cyrillic = bool(re.search(r"[\u0400-\u04FF]", value))
+        word_count = len(re.findall(r"[\w\u0400-\u04FF]+", value))
+        if not has_cyrillic and word_count <= 1:
+            return -2
         score = letters - digits
         if any(char.isupper() for char in value):
             score += 1

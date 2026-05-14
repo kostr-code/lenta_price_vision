@@ -99,6 +99,28 @@ def expand_bbox(bbox: BBox, image_width: int, image_height: int, pad_px: int) ->
     )
 
 
+def expand_price_tag_crop(
+    bbox: BBox,
+    image_width: int,
+    image_height: int,
+    side_pad: float = 0.18,
+    top_pad: float = 0.10,
+    bottom_pad: float = 1.45,
+) -> BBox:
+    width = max(1.0, bbox.width)
+    height = max(1.0, bbox.height)
+    return clamp_bbox(
+        BBox(
+            bbox.x_min - side_pad * width,
+            bbox.y_min - top_pad * height,
+            bbox.x_max + side_pad * width,
+            bbox.y_max + bottom_pad * height,
+        ),
+        image_width,
+        image_height,
+    )
+
+
 def bbox_iou(left: BBox, right: BBox) -> float:
     x_min = max(left.x_min, right.x_min)
     y_min = max(left.y_min, right.y_min)

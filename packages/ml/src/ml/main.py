@@ -31,6 +31,14 @@ YOLO_WEIGHTS_FORM_PARAM = Form(None)
 ENABLE_OCR_FORM_PARAM = Form(None)
 ENABLE_QR_FORM_PARAM = Form(None)
 SAVE_CROPS_FORM_PARAM = Form(False)
+YOLO_CONF_FORM_PARAM = Form(None)
+DETECTOR_IMGSZ_FORM_PARAM = Form(None)
+DETECTOR_IOU_FORM_PARAM = Form(None)
+DETECTOR_DEVICE_FORM_PARAM = Form(None)
+TRACKING_BACKEND_FORM_PARAM = Form(None)
+TRACKER_CONFIG_FORM_PARAM = Form(None)
+DEFER_OCR_FORM_PARAM = Form(None)
+TOP_K_CROPS_FORM_PARAM = Form(None)
 TILED_YOLO_FORM_PARAM = Form(None)
 TILE_SIZE_FORM_PARAM = Form(None)
 TILE_STRIDE_FORM_PARAM = Form(None)
@@ -75,6 +83,14 @@ class PathPredictionRequest(BaseModel):
     sample_fps: float | None = Field(default=None, gt=0)
     max_frames: int = Field(default=0, ge=0)
     yolo_weights: str | None = None
+    yolo_conf: float | None = Field(default=None, gt=0, le=1)
+    detector_imgsz: int | None = Field(default=None, ge=320)
+    detector_iou: float | None = Field(default=None, gt=0, le=1)
+    detector_device: str | None = None
+    tracking_backend: str | None = None
+    tracker_config: str | None = None
+    defer_ocr: bool | None = None
+    top_k_crops_per_track: int | None = Field(default=None, ge=1)
     enable_ocr: bool | None = None
     enable_qr: bool | None = None
     tiled_yolo: bool | None = None
@@ -94,6 +110,14 @@ class EvaluationRequest(BaseModel):
     sample_fps: float | None = Field(default=1.0, gt=0)
     max_frames: int = Field(default=0, ge=0)
     yolo_weights: str | None = None
+    yolo_conf: float | None = Field(default=None, gt=0, le=1)
+    detector_imgsz: int | None = Field(default=None, ge=320)
+    detector_iou: float | None = Field(default=None, gt=0, le=1)
+    detector_device: str | None = None
+    tracking_backend: str | None = None
+    tracker_config: str | None = None
+    defer_ocr: bool | None = None
+    top_k_crops_per_track: int | None = Field(default=None, ge=1)
     tiled_yolo: bool | None = None
     tile_size: int | None = Field(default=None, ge=64)
     tile_stride: int | None = Field(default=None, ge=32)
@@ -149,6 +173,14 @@ def predict_path(request: PathPredictionRequest) -> dict[str, object]:
         sample_fps=request.sample_fps,
         max_frames=request.max_frames,
         yolo_weights=request.yolo_weights,
+        yolo_conf=request.yolo_conf,
+        detector_imgsz=request.detector_imgsz,
+        detector_iou=request.detector_iou,
+        detector_device=request.detector_device,
+        tracking_backend=request.tracking_backend,
+        tracker_config=request.tracker_config,
+        defer_ocr=request.defer_ocr,
+        top_k_crops_per_track=request.top_k_crops_per_track,
         enable_ocr=request.enable_ocr,
         enable_qr=request.enable_qr,
         tiled_yolo=request.tiled_yolo,
@@ -170,6 +202,14 @@ async def predict_video(
     sample_fps: float | None = SAMPLE_FPS_FORM_PARAM,
     max_frames: int = MAX_FRAMES_FORM_PARAM,
     yolo_weights: str | None = YOLO_WEIGHTS_FORM_PARAM,
+    yolo_conf: float | None = YOLO_CONF_FORM_PARAM,
+    detector_imgsz: int | None = DETECTOR_IMGSZ_FORM_PARAM,
+    detector_iou: float | None = DETECTOR_IOU_FORM_PARAM,
+    detector_device: str | None = DETECTOR_DEVICE_FORM_PARAM,
+    tracking_backend: str | None = TRACKING_BACKEND_FORM_PARAM,
+    tracker_config: str | None = TRACKER_CONFIG_FORM_PARAM,
+    defer_ocr: bool | None = DEFER_OCR_FORM_PARAM,
+    top_k_crops_per_track: int | None = TOP_K_CROPS_FORM_PARAM,
     enable_ocr: bool | None = ENABLE_OCR_FORM_PARAM,
     enable_qr: bool | None = ENABLE_QR_FORM_PARAM,
     tiled_yolo: bool | None = TILED_YOLO_FORM_PARAM,
@@ -195,6 +235,14 @@ async def predict_video(
         sample_fps=sample_fps,
         max_frames=max_frames,
         yolo_weights=yolo_weights,
+        yolo_conf=yolo_conf,
+        detector_imgsz=detector_imgsz,
+        detector_iou=detector_iou,
+        detector_device=detector_device,
+        tracking_backend=tracking_backend,
+        tracker_config=tracker_config,
+        defer_ocr=defer_ocr,
+        top_k_crops_per_track=top_k_crops_per_track,
         enable_ocr=enable_ocr,
         enable_qr=enable_qr,
         tiled_yolo=tiled_yolo,
@@ -216,6 +264,14 @@ def evaluate_public(request: EvaluationRequest) -> dict[str, object]:
         sample_fps=request.sample_fps,
         max_frames=request.max_frames,
         yolo_weights=request.yolo_weights,
+        yolo_conf=request.yolo_conf,
+        detector_imgsz=request.detector_imgsz,
+        detector_iou=request.detector_iou,
+        detector_device=request.detector_device,
+        tracking_backend=request.tracking_backend,
+        tracker_config=request.tracker_config,
+        defer_ocr=request.defer_ocr,
+        top_k_crops_per_track=request.top_k_crops_per_track,
         tiled_yolo=request.tiled_yolo,
         tile_size=request.tile_size,
         tile_stride=request.tile_stride,
@@ -286,6 +342,14 @@ def run_pipeline(
     sample_fps: float | None,
     max_frames: int,
     yolo_weights: str | None,
+    yolo_conf: float | None,
+    detector_imgsz: int | None,
+    detector_iou: float | None,
+    detector_device: str | None,
+    tracking_backend: str | None,
+    tracker_config: str | None,
+    defer_ocr: bool | None,
+    top_k_crops_per_track: int | None,
     enable_ocr: bool | None,
     enable_qr: bool | None,
     tiled_yolo: bool | None,
@@ -302,6 +366,14 @@ def run_pipeline(
         sample_fps=sample_fps,
         max_frames=max_frames,
         yolo_weights=yolo_weights,
+        yolo_conf=yolo_conf,
+        detector_imgsz=detector_imgsz,
+        detector_iou=detector_iou,
+        detector_device=detector_device,
+        tracking_backend=tracking_backend,
+        tracker_config=tracker_config,
+        defer_ocr=defer_ocr,
+        top_k_crops_per_track=top_k_crops_per_track,
         enable_ocr=enable_ocr,
         enable_qr=enable_qr,
         tiled_yolo=tiled_yolo,
@@ -323,6 +395,10 @@ def run_pipeline(
     response["download"] = download_hint(Path(result.output_csv))
     if result.debug_json:
         response["debug_download"] = download_hint(Path(result.debug_json))
+    if result.debug_tracks_json:
+        response["debug_tracks_download"] = download_hint(Path(result.debug_tracks_json))
+    if result.debug_detections_json:
+        response["debug_detections_download"] = download_hint(Path(result.debug_detections_json))
     return response
 
 
