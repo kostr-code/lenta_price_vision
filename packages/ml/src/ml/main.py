@@ -31,7 +31,6 @@ YOLO_WEIGHTS_FORM_PARAM = Form(None)
 ENABLE_OCR_FORM_PARAM = Form(None)
 ENABLE_QR_FORM_PARAM = Form(None)
 SAVE_CROPS_FORM_PARAM = Form(False)
-<<<<<<< HEAD
 YOLO_CONF_FORM_PARAM = Form(None)
 DETECTOR_IMGSZ_FORM_PARAM = Form(None)
 DETECTOR_IOU_FORM_PARAM = Form(None)
@@ -47,7 +46,6 @@ MAX_TILES_FORM_PARAM = Form(None)
 CROP_PHASH_DEDUP_FORM_PARAM = Form(None)
 DERIVE_QR_FIELDS_FORM_PARAM = Form(None)
 RAIL_ROI_FORM_PARAM = Form(None)
-=======
 SUPPORTED_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
 app = FastAPI(title="Price Tag Audit ML Service")
 

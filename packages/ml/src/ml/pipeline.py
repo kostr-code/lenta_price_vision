@@ -12,16 +12,10 @@ from .field_extractor import ExtractionInput, PriceTagFieldExtractor
 from .media import (
     BBox,
     bbox_iou,
-<<<<<<< HEAD
     clamp_bbox,
     crop_image,
     enhance_crop,
     expand_price_tag_crop,
-    iter_sampled_frames,
-    laplacian_sharpness,
-=======
-    crop_image,
-    enhance_crop,
     image_metadata,
     iter_sampled_frames,
     laplacian_sharpness,
@@ -223,7 +217,6 @@ class RetailShelfPipeline:
             status={"finder": self.finder.yolo_status, "ocr": self.text_reader.status},
         )
 
-<<<<<<< HEAD
     def _run_video_with_bytetrack(self, video_path: Path, output_dir: Path) -> PipelineRunResult:
         model = self.finder.load_yolo_model()
         if model is None:
@@ -237,14 +230,6 @@ class RetailShelfPipeline:
         metadata = video_metadata(video_path)
         fps = float(metadata.get("fps") or 0.0)
         vid_stride = sample_stride(fps, self.config.sample_fps)
-=======
-    def run_image(self, image_path: Path, output_dir: Path) -> PipelineRunResult:
-        output_dir.mkdir(parents=True, exist_ok=True)
-        crops_dir = output_dir / "crops"
-        if self.config.save_crops:
-            crops_dir.mkdir(parents=True, exist_ok=True)
-
->>>>>>> Zenia
         tracker = EvidenceFusionTracker(
             FusionConfig(
                 tracker_iou=self.config.tracker_iou,
@@ -254,7 +239,6 @@ class RetailShelfPipeline:
             )
         )
         debug: dict[str, Any] = {
-<<<<<<< HEAD
             "video": str(video_path),
             "config": asdict(self.config),
             "tracking_backend": "bytetrack",
@@ -390,6 +374,114 @@ class RetailShelfPipeline:
             frames_seen=frames_seen,
             detections_seen=detections_seen,
             metadata=metadata,
+            status={"finder": self.finder.yolo_status, "ocr": self.text_reader.status},
+        )
+
+    def run_image(self, image_path: Path, output_dir: Path) -> PipelineRunResult:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        crops_dir = output_dir / "debug_crops"
+        if self.config.save_crops:
+            crops_dir.mkdir(parents=True, exist_ok=True)
+
+        tracker = EvidenceFusionTracker(
+            FusionConfig(
+                tracker_iou=self.config.tracker_iou,
+                tracker_center_threshold=self.config.tracker_center_threshold,
+                max_lost=self.config.max_lost,
+                min_track_observations=self.config.min_track_observations,
+            )
+        )
+        debug: dict[str, Any] = {
+            "image": str(image_path),
+            "config": asdict(self.config),
+            "frames": [],
+        }
+        detection_events: list[dict[str, Any]] = []
+        crop_deduplicators: dict[str, CropDeduplicator] = {}
+        deferred_crops: dict[str, list[DeferredCropCandidate]] = {}
+
+        image = load_image(image_path)
+        sharpness = laplacian_sharpness(image)
+        candidates = self.finder.find(image)
+        detections_seen = len(candidates)
+        frame_observations: list[PriceTagObservation] = []
+        debug_detections: list[dict[str, Any]] = []
+
+        for candidate_order, candidate in enumerate(candidates):
+            observation, debug_item = self._process_candidate(
+                video_path=image_path,
+                crops_dir=crops_dir,
+                crop_deduplicators=crop_deduplicators,
+                frame_image=image,
+                frame_order=0,
+                frame_index=0,
+                timestamp_ms=0,
+                candidate=candidate,
+                candidate_order=candidate_order,
+                track_id=None,
+                deferred_crops=deferred_crops,
+            )
+            frame_observations.append(observation)
+            debug_detections.append(debug_item)
+            detection_events.append(debug_item)
+
+        tracker.update(frame_observations, 0)
+        debug["frames"].append(
+            {
+                "frame_index": 0,
+                "timestamp_ms": 0,
+                "sharpness": round(sharpness, 2),
+                "detections": detections_seen,
+                "sources": [candidate.source for candidate in candidates],
+                "items": debug_detections,
+            }
+        )
+
+        deferred_reads = self._process_deferred_crops(image_path, tracker, deferred_crops)
+        detection_events.extend(deferred_reads)
+        records = tracker.finalize()
+        output_csv = output_dir / f"{image_path.stem}_recognized.csv"
+        write_records_csv(records, output_csv)
+
+        debug_path: Path | None = None
+        debug_tracks_path: Path | None = None
+        debug_detections_path: Path | None = None
+        if self.config.save_debug_json:
+            tracks_debug = tracker.debug_tracks()
+            debug.update(
+                {
+                    "rows": len(records),
+                    "frames_seen": 1,
+                    "detections_seen": detections_seen,
+                    "finder": self.finder.yolo_status,
+                    "ocr": self.text_reader.status,
+                    "tracks": tracks_debug,
+                    "deferred_reads": deferred_reads,
+                }
+            )
+            debug_path = output_dir / f"{image_path.stem}_debug.json"
+            debug_path.write_text(json.dumps(debug, ensure_ascii=False, indent=2), encoding="utf-8")
+            debug_tracks_path = output_dir / "debug_tracks.json"
+            debug_tracks_path.write_text(
+                json.dumps(tracks_debug, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            debug_detections_path = output_dir / "debug_detections.json"
+            debug_detections_path.write_text(
+                json.dumps(detection_events, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+        return PipelineRunResult(
+            video_path=str(image_path),
+            output_csv=str(output_csv),
+            debug_json=str(debug_path) if debug_path else None,
+            debug_tracks_json=str(debug_tracks_path) if debug_tracks_path else None,
+            debug_detections_json=str(debug_detections_path) if debug_detections_path else None,
+            rows=len(records),
+            frames_seen=1,
+            detections_seen=detections_seen,
+            metadata=image_metadata(image_path),
             status={"finder": self.finder.yolo_status, "ocr": self.text_reader.status},
         )
 
@@ -534,91 +626,6 @@ class RetailShelfPipeline:
         return observation, debug_item
 
     def _save_debug_crops(
-=======
-            "image": str(image_path),
-            "config": asdict(self.config),
-            "frames": [],
-        }
-        image = load_image(image_path)
-        frame_timestamp_ms = 0
-        frame_index = 0
-        sharpness = laplacian_sharpness(image)
-
-        frame_observations: list[PriceTagObservation] = []
-        candidates = self.finder.find(image)
-        detections_seen = len(candidates)
-        for candidate_order, candidate in enumerate(candidates):
-            crop = crop_image(image, candidate.bbox, self.config.crop_pad_px)
-            enhanced = enhance_crop(crop)
-            qr_decodes = self.qr_decoder.decode(enhanced) if self.config.enable_qr else []
-            text_lines = self.text_reader.read(enhanced) if self.config.enable_ocr else []
-            record = self.extractor.extract(
-                ExtractionInput(
-                    filename=image_path.name,
-                    text_lines=text_lines,
-                    qr_decodes=qr_decodes,
-                    color_hint=self._color_hint(candidate.label, candidate.source),
-                    crop=enhanced,
-                )
-            )
-            record.update(candidate.bbox.to_record_values())
-            record["frame_timestamp"] = str(frame_timestamp_ms)
-            frame_observations.append(
-                PriceTagObservation(
-                    record=record,
-                    bbox=candidate.bbox,
-                    frame_timestamp=frame_timestamp_ms,
-                    frame_index=frame_index,
-                    confidence=candidate.confidence,
-                    sharpness=sharpness,
-                    source=candidate.source,
-                )
-            )
-            if self.config.save_crops:
-                self._save_crop(crops_dir, frame_index, candidate_order, enhanced)
-
-        tracker.update(frame_observations, frame_index)
-        debug["frames"].append(
-            {
-                "frame_index": frame_index,
-                "timestamp_ms": frame_timestamp_ms,
-                "sharpness": round(sharpness, 2),
-                "detections": len(candidates),
-                "sources": [candidate.source for candidate in candidates],
-            }
-        )
-
-        records = tracker.finalize()
-        output_csv = output_dir / f"{image_path.stem}_recognized.csv"
-        write_records_csv(records, output_csv)
-
-        debug_path: Path | None = None
-        if self.config.save_debug_json:
-            debug.update(
-                {
-                    "rows": len(records),
-                    "frames_seen": 1,
-                    "detections_seen": detections_seen,
-                    "finder": self.finder.yolo_status,
-                    "ocr": self.text_reader.status,
-                }
-            )
-            debug_path = output_dir / f"{image_path.stem}_debug.json"
-            debug_path.write_text(json.dumps(debug, ensure_ascii=False, indent=2), encoding="utf-8")
-
-        return PipelineRunResult(
-            video_path=str(image_path),
-            output_csv=str(output_csv),
-            debug_json=str(debug_path) if debug_path else None,
-            rows=len(records),
-            frames_seen=1,
-            detections_seen=detections_seen,
-            metadata=image_metadata(image_path),
-            status={"finder": self.finder.yolo_status, "ocr": self.text_reader.status},
-        )
-
-    def _save_crop(
->>>>>>> Zenia
         self,
         crops_dir: Path,
         frame_order: int,
