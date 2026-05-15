@@ -18,6 +18,7 @@ class TextReaderConfig:
     use_tesseract_fallback: bool = True
     language: str = "ru"
     use_gpu: bool = False
+    zoned: bool = False
 
 
 class TextReader:
@@ -45,11 +46,18 @@ class TextReader:
             return []
 
         lines: list[TextLine] = []
+        for zone_name, zone_image in ocr_zones(image, self.config.zoned):
+            zone_lines = self._read_single_image(zone_image)
+            lines.extend(tag_zone(zone_lines, zone_name))
+        return deduplicate_lines(lines)
+
+    def _read_single_image(self, image: Any) -> list[TextLine]:
+        lines: list[TextLine] = []
         if self.config.prefer_paddle:
             lines.extend(self._read_paddle(image))
         if self.config.use_tesseract_fallback and (not lines or not self.config.prefer_paddle):
             lines.extend(self._read_tesseract(image))
-        return deduplicate_lines(lines)
+        return lines
 
     def _read_paddle(self, image: Any) -> list[TextLine]:
         if self._paddle_disabled:
@@ -190,6 +198,48 @@ def deduplicate_lines(lines: list[TextLine]) -> list[TextLine]:
         if current is None or line.confidence > current.confidence:
             by_text[key] = line
     return sorted(by_text.values(), key=lambda line: line.confidence, reverse=True)
+
+
+def tag_zone(lines: list[TextLine], zone_name: str) -> list[TextLine]:
+    if zone_name == "full":
+        return lines
+    return [
+        TextLine(line.text, line.confidence * 0.97, f"{line.source}:zone={zone_name}")
+        for line in lines
+    ]
+
+
+def ocr_zones(image: Any, enabled: bool) -> list[tuple[str, Any]]:
+    zones: list[tuple[str, Any]] = [("full", image)]
+    if not enabled:
+        return zones
+    try:
+        height, width = image.shape[:2]
+    except Exception:
+        return zones
+    if height < 12 or width < 12:
+        return zones
+
+    y55 = max(1, min(height - 1, int(height * 0.55)))
+    y45 = max(1, min(height - 1, int(height * 0.45)))
+    x50 = max(1, min(width - 1, int(width * 0.50)))
+    candidates = [
+        ("product_name", image[:y55, :]),
+        ("main_price", image[y45:, :]),
+        ("barcode_meta", image[y55:, :]),
+        ("left", image[:, :x50]),
+        ("right", image[:, x50:]),
+    ]
+    zones.extend((name, crop) for name, crop in candidates if is_readable_crop(crop))
+    return zones
+
+
+def is_readable_crop(image: Any) -> bool:
+    try:
+        height, width = image.shape[:2]
+        return bool(image.size and height >= 8 and width >= 8)
+    except Exception:
+        return False
 
 
 def compact_error(value: str | None, limit: int = 500) -> str:

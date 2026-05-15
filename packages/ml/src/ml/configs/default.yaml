@@ -4,6 +4,10 @@ detector:
   conf: 0.15
   iou: 0.5
   device: 0
+  tiled: true
+  tile_size: 640
+  tile_stride: 512
+  max_tiles_per_frame: 64
   enable_fallbacks: true
   fallback_when_tracked: false
 
@@ -38,6 +42,13 @@ qr:
     - zxing
     - pyzbar
     - opencv
+  try_scales:
+    - 1.0
+    - 1.5
+    - 2.0
+    - 3.0
+  try_orientations: true
+  try_preprocessing: true
 
 ocr:
   enabled: true
@@ -45,6 +56,10 @@ ocr:
   top_k_crops_per_track: 5
   use_paddleocr: false
   use_tesseract_fallback: true
+  zoned: true
+
+parser:
+  derive_qr_fields: true
 
 fusion:
   prefer_qr_fields: true

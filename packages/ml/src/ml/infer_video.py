@@ -27,10 +27,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--iou", type=float, default=None)
     parser.add_argument("--imgsz", type=int, default=None)
     parser.add_argument("--device", default=None)
+    parser.add_argument("--tiled-yolo", action="store_true")
+    parser.add_argument("--tile-size", type=int, default=None)
+    parser.add_argument("--tile-stride", type=int, default=None)
+    parser.add_argument("--max-tiles-per-frame", type=int, default=None)
     parser.add_argument("--tracking-backend", default=None, choices=["bytetrack", "fusion"])
     parser.add_argument("--tracker-config", default=None)
     parser.add_argument("--no-defer-ocr", action="store_true")
     parser.add_argument("--top-k-crops-per-track", type=int, default=None)
+    parser.add_argument("--zoned-ocr", action="store_true")
+    parser.add_argument("--derive-qr-fields", action="store_true")
     parser.add_argument("--disable-ocr", action="store_true")
     parser.add_argument("--disable-qr", action="store_true")
     parser.add_argument("--save-crops", action="store_true")
@@ -66,10 +72,16 @@ def config_overrides_from_args(args: argparse.Namespace) -> dict[str, Any]:
         "detector_iou": args.iou,
         "detector_imgsz": args.imgsz,
         "detector_device": args.device,
+        "tiled_yolo": True if args.tiled_yolo else None,
+        "tile_size": args.tile_size,
+        "tile_stride": args.tile_stride,
+        "max_tiles_per_frame": args.max_tiles_per_frame,
         "tracking_backend": args.tracking_backend,
         "tracker_config": args.tracker_config,
         "defer_ocr": False if args.no_defer_ocr else None,
         "top_k_crops_per_track": args.top_k_crops_per_track,
+        "zoned_ocr": True if args.zoned_ocr else None,
+        "derive_qr_fields_when_missing": True if args.derive_qr_fields else None,
         "enable_ocr": False if args.disable_ocr else None,
         "enable_qr": False if args.disable_qr else None,
         "save_crops": True if args.save_crops else None,
@@ -93,6 +105,10 @@ def config_overrides_from_file(path: Path | None) -> dict[str, Any]:
             "yolo_conf": detector.get("conf"),
             "detector_iou": detector.get("iou"),
             "detector_device": normalize_device(detector.get("device")),
+            "tiled_yolo": detector.get("tiled"),
+            "tile_size": detector.get("tile_size"),
+            "tile_stride": detector.get("tile_stride"),
+            "max_tiles_per_frame": detector.get("max_tiles_per_frame"),
             "enable_detector_fallbacks": detector.get("enable_fallbacks"),
             "fallback_when_tracked": detector.get("fallback_when_tracked"),
         }
@@ -132,11 +148,16 @@ def config_overrides_from_file(path: Path | None) -> dict[str, Any]:
     values.update(
         {
             "enable_qr": qr.get("enabled"),
+            "qr_scales": tuple(qr.get("try_scales") or (1.0, 1.5, 2.0, 3.0)),
+            "qr_try_orientations": qr.get("try_orientations"),
+            "qr_try_preprocessing": qr.get("try_preprocessing"),
             "enable_ocr": ocr.get("enabled"),
             "defer_ocr": ocr.get("defer"),
             "top_k_crops_per_track": ocr.get("top_k_crops_per_track"),
+            "zoned_ocr": ocr.get("zoned"),
             "prefer_paddle": ocr.get("use_paddleocr"),
             "use_tesseract_fallback": ocr.get("use_tesseract_fallback"),
+            "derive_qr_fields_when_missing": data.get("parser", {}).get("derive_qr_fields"),
             "save_debug_json": output.get("write_debug_json"),
         }
     )

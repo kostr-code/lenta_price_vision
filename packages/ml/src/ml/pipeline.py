@@ -67,7 +67,11 @@ class PipelineConfig:
     max_detections_per_frame: int = 80
     enable_ocr: bool = True
     enable_qr: bool = True
+    qr_scales: tuple[float, ...] = (1.0, 1.5, 2.0, 3.0)
+    qr_try_orientations: bool = True
+    qr_try_preprocessing: bool = True
     defer_ocr: bool = True
+    zoned_ocr: bool = False
     top_k_crops_per_track: int = 5
     max_crops_per_track: int = 10
     prefer_paddle: bool = True
@@ -175,7 +179,11 @@ class RetailShelfPipeline:
                 max_detections_per_frame=self.config.max_detections_per_frame,
             )
         )
-        self.qr_decoder = QRDecoder()
+        self.qr_decoder = QRDecoder(
+            scales=tuple(self.config.qr_scales),
+            try_orientations=self.config.qr_try_orientations,
+            try_preprocessing=self.config.qr_try_preprocessing,
+        )
         self.rail_roi = RailRoiDetector(
             RailRoiConfig(
                 enabled=self.config.rail_roi_enabled,
@@ -192,6 +200,7 @@ class RetailShelfPipeline:
                 use_tesseract_fallback=self.config.use_tesseract_fallback,
                 language=self.config.ocr_lang,
                 use_gpu=self.config.use_gpu,
+                zoned=self.config.zoned_ocr,
             )
         )
         self.extractor = PriceTagFieldExtractor()

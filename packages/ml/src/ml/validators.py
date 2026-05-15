@@ -9,7 +9,7 @@ from .schema import ABSENT_VALUE, normalize_value
 PRICE_RE = re.compile(r"^\d{1,6}([,.]\d{2})?$")
 DISCOUNT_RE = re.compile(r"^-?\d{1,3}%$")
 EAN13_RE = re.compile(r"^\d{13}$")
-SKU_RE = re.compile(r"^\d{8,14}$")
+SKU_RE = re.compile(r"^\d{12}$")
 DATETIME_FORMATS = ("%d.%m.%Y %H:%M", "%d.%m.%Y %H.%M", "%d.%m.%Y %H:%M:%S")
 SPECIAL_SYMBOLS = {
     "ш": "Ш",

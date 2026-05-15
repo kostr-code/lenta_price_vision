@@ -19,6 +19,7 @@ from .validators import (
 PRICE_RE = re.compile(r"(?<!\d)(\d{1,5})\s*[,.]\s*(\d{2})(?![\dA-Za-z\u0400-\u04FF])")
 SPLIT_PRICE_RE = re.compile(r"(?<!\d)(\d{1,5})\s+(\d{2})(?![\dA-Za-z\u0400-\u04FF])")
 EAN_RE = re.compile(r"(?<!\d)(\d{13})(?!\d)")
+BARCODE_RE = re.compile(r"(?<!\d)(\d{8,14})(?!\d)")
 SKU_RE = re.compile(r"(?<!\d)(\d{12})(?!\d)")
 DATE_TIME_RE = re.compile(r"(\d{2}[.]\d{2}[.]\d{4}\s+\d{1,2}[:.]\d{2})")
 DISCOUNT_RE = re.compile(r"[-\u2212]?\s*\d{1,3}\s*%")
@@ -97,11 +98,12 @@ class PriceTagFieldExtractor:
         return fields
 
     def _barcode(self, text: str) -> str:
-        match = EAN_RE.search(text)
-        if not match:
-            return ""
-        barcode = normalize_barcode(match.group(1))
-        return barcode if validate_barcode(barcode) else ""
+        for regex in (EAN_RE, BARCODE_RE):
+            for match in regex.finditer(text):
+                barcode = normalize_barcode(match.group(1))
+                if validate_barcode(barcode):
+                    return barcode
+        return ""
 
     def _sku(self, text: str, barcode: str) -> str:
         for match in SKU_RE.finditer(text):
@@ -150,7 +152,7 @@ class PriceTagFieldExtractor:
         value = text.strip()
         if len(value) < 6:
             return -2
-        if PRICE_RE.search(value) or EAN_RE.search(value) or SKU_RE.search(value):
+        if PRICE_RE.search(value) or BARCODE_RE.search(value) or SKU_RE.search(value):
             return -3
         if DISCOUNT_RE.search(value) or DATE_TIME_RE.search(value):
             return -2
@@ -167,6 +169,7 @@ class PriceTagFieldExtractor:
 
     def _prices(self, text: str) -> list[str]:
         prices: list[str] = []
+        text = DISCOUNT_RE.sub(" ", text)
         for regex in (PRICE_RE, SPLIT_PRICE_RE):
             for match in regex.finditer(text):
                 if looks_like_date_fragment(text, match.start(), match.end()):

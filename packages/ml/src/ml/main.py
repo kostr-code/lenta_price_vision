@@ -39,6 +39,7 @@ TRACKING_BACKEND_FORM_PARAM = Form(None)
 TRACKER_CONFIG_FORM_PARAM = Form(None)
 DEFER_OCR_FORM_PARAM = Form(None)
 TOP_K_CROPS_FORM_PARAM = Form(None)
+ZONED_OCR_FORM_PARAM = Form(None)
 TILED_YOLO_FORM_PARAM = Form(None)
 TILE_SIZE_FORM_PARAM = Form(None)
 TILE_STRIDE_FORM_PARAM = Form(None)
@@ -91,6 +92,7 @@ class PathPredictionRequest(BaseModel):
     tracking_backend: str | None = None
     tracker_config: str | None = None
     defer_ocr: bool | None = None
+    zoned_ocr: bool | None = None
     top_k_crops_per_track: int | None = Field(default=None, ge=1)
     enable_ocr: bool | None = None
     enable_qr: bool | None = None
@@ -118,6 +120,7 @@ class EvaluationRequest(BaseModel):
     tracking_backend: str | None = None
     tracker_config: str | None = None
     defer_ocr: bool | None = None
+    zoned_ocr: bool | None = None
     top_k_crops_per_track: int | None = Field(default=None, ge=1)
     tiled_yolo: bool | None = None
     tile_size: int | None = Field(default=None, ge=64)
@@ -181,6 +184,7 @@ def predict_path(request: PathPredictionRequest) -> dict[str, object]:
         tracking_backend=request.tracking_backend,
         tracker_config=request.tracker_config,
         defer_ocr=request.defer_ocr,
+        zoned_ocr=request.zoned_ocr,
         top_k_crops_per_track=request.top_k_crops_per_track,
         enable_ocr=request.enable_ocr,
         enable_qr=request.enable_qr,
@@ -210,6 +214,7 @@ async def predict_video(
     tracking_backend: str | None = TRACKING_BACKEND_FORM_PARAM,
     tracker_config: str | None = TRACKER_CONFIG_FORM_PARAM,
     defer_ocr: bool | None = DEFER_OCR_FORM_PARAM,
+    zoned_ocr: bool | None = ZONED_OCR_FORM_PARAM,
     top_k_crops_per_track: int | None = TOP_K_CROPS_FORM_PARAM,
     enable_ocr: bool | None = ENABLE_OCR_FORM_PARAM,
     enable_qr: bool | None = ENABLE_QR_FORM_PARAM,
@@ -243,6 +248,7 @@ async def predict_video(
         tracking_backend=tracking_backend,
         tracker_config=tracker_config,
         defer_ocr=defer_ocr,
+        zoned_ocr=zoned_ocr,
         top_k_crops_per_track=top_k_crops_per_track,
         enable_ocr=enable_ocr,
         enable_qr=enable_qr,
@@ -308,6 +314,7 @@ def evaluate_public(request: EvaluationRequest) -> dict[str, object]:
         tracking_backend=request.tracking_backend,
         tracker_config=request.tracker_config,
         defer_ocr=request.defer_ocr,
+        zoned_ocr=request.zoned_ocr,
         top_k_crops_per_track=request.top_k_crops_per_track,
         tiled_yolo=request.tiled_yolo,
         tile_size=request.tile_size,
@@ -386,6 +393,7 @@ def run_pipeline(
     tracking_backend: str | None,
     tracker_config: str | None,
     defer_ocr: bool | None,
+    zoned_ocr: bool | None,
     top_k_crops_per_track: int | None,
     enable_ocr: bool | None,
     enable_qr: bool | None,
@@ -410,6 +418,7 @@ def run_pipeline(
         tracking_backend=tracking_backend,
         tracker_config=tracker_config,
         defer_ocr=defer_ocr,
+        zoned_ocr=zoned_ocr,
         top_k_crops_per_track=top_k_crops_per_track,
         enable_ocr=enable_ocr,
         enable_qr=enable_qr,

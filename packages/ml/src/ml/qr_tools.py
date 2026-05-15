@@ -19,14 +19,21 @@ class QRDecode:
 class QRDecoder:
     """Multi-backend QR/barcode reader with a no-crash optional dependency policy."""
 
-    def __init__(self, scales: tuple[float, ...] = (1.0, 1.5, 2.0)) -> None:
+    def __init__(
+        self,
+        scales: tuple[float, ...] = (1.0, 1.5, 2.0, 3.0),
+        try_orientations: bool = True,
+        try_preprocessing: bool = True,
+    ) -> None:
         self.scales = scales
+        self.try_orientations = try_orientations
+        self.try_preprocessing = try_preprocessing
 
     def decode(self, image: Any) -> list[QRDecode]:
         payloads: list[tuple[str, str]] = []
-        for scaled_image, suffix in self._scaled_images(image):
+        for variant_image, suffix in self._image_variants(image):
             payloads.extend(
-                (raw, f"{source}{suffix}") for raw, source in self._decode_once(scaled_image)
+                (raw, f"{source}{suffix}") for raw, source in self._decode_once(variant_image)
             )
             if payloads:
                 break
@@ -48,6 +55,40 @@ class QRDecoder:
         payloads.extend(self._decode_with_opencv(image))
         return payloads
 
+    def _image_variants(self, image: Any) -> list[tuple[Any, str]]:
+        variants: list[tuple[Any, str]] = []
+        for oriented_image, orientation_suffix in self._orientation_variants(image):
+            for scaled_image, scale_suffix in self._scaled_images(oriented_image):
+                suffix = f"{orientation_suffix}{scale_suffix}"
+                variants.append((scaled_image, suffix))
+                if self.try_preprocessing:
+                    variants.extend(
+                        (processed, f"{suffix}{preprocess_suffix}")
+                        for processed, preprocess_suffix in self._preprocessed_images(
+                            scaled_image
+                        )
+                    )
+        return variants
+
+    def _orientation_variants(self, image: Any) -> list[tuple[Any, str]]:
+        variants: list[tuple[Any, str]] = [(image, "")]
+        if not self.try_orientations:
+            return variants
+        try:
+            from .media import import_cv2
+
+            cv2 = import_cv2()
+            variants.extend(
+                [
+                    (cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE), ":rot90ccw"),
+                    (cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE), ":rot90cw"),
+                    (cv2.rotate(image, cv2.ROTATE_180), ":rot180"),
+                ]
+            )
+        except Exception:
+            return variants
+        return variants
+
     def _scaled_images(self, image: Any) -> list[tuple[Any, str]]:
         variants: list[tuple[Any, str]] = [(image, "")]
         try:
@@ -68,6 +109,35 @@ class QRDecoder:
         except Exception:
             return variants
         return variants
+
+    def _preprocessed_images(self, image: Any) -> list[tuple[Any, str]]:
+        try:
+            from .media import import_cv2
+
+            cv2 = import_cv2()
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if len(image.shape) == 3 else image
+            _threshold, otsu = cv2.threshold(
+                gray,
+                0,
+                255,
+                cv2.THRESH_BINARY + cv2.THRESH_OTSU,
+            )
+            adaptive = cv2.adaptiveThreshold(
+                gray,
+                255,
+                cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                cv2.THRESH_BINARY,
+                31,
+                7,
+            )
+            return [
+                (otsu, ":otsu"),
+                (adaptive, ":adaptive"),
+                (cv2.bitwise_not(otsu), ":otsu_invert"),
+                (cv2.bitwise_not(adaptive), ":adaptive_invert"),
+            ]
+        except Exception:
+            return []
 
     def _decode_with_zxingcpp(self, image: Any) -> list[tuple[str, str]]:
         try:

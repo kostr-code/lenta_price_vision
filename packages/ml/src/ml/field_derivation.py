@@ -12,9 +12,13 @@ def derive_fields(
     derived = {key: normalize_value(value) for key, value in record.items()}
     if derive_qr_fields_when_missing:
         copy_if_missing(derived, "qr_code_barcode", "barcode")
+        copy_if_missing(derived, "barcode", "qr_code_barcode")
         copy_if_missing(derived, "price1_qr", "price_default")
+        copy_if_missing(derived, "price_default", "price1_qr")
         copy_if_missing(derived, "price4_qr", "price_card")
+        copy_if_missing(derived, "price_card", "price4_qr")
         copy_if_missing(derived, "action_price_qr", "price_discount")
+        copy_if_missing(derived, "price_discount", "action_price_qr")
 
     if missing(derived.get("discount_amount")):
         discount = derive_discount(derived.get("price_default"), derived.get("price_card"))
