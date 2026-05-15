@@ -21,22 +21,58 @@ jobs:
           python-version: "3.11"
 
       - name: Sync backend/frontend
-        run: uv sync
+        run: uv sync --frozen
 
       - name: Lint backend/frontend
         run: uv run ruff check .
 
+      - name: Test backend/frontend
+        run: |
+          test_dirs=()
+          for dir in packages/backend/tests packages/frontend/tests tests; do
+            if [ -d "$dir" ]; then
+              test_dirs+=("$dir")
+            fi
+          done
+
+          if [ "${#test_dirs[@]}" -eq 0 ]; then
+            echo "No backend/frontend test directories found"
+            exit 0
+          fi
+
+          if ! find "${test_dirs[@]}" -type f \( -name "test_*.py" -o -name "*_test.py" \) | grep -q .; then
+            echo "No backend/frontend tests found"
+            exit 0
+          fi
+
+          uv run pytest "${test_dirs[@]}"
+
       - name: Sync ML
-        run: cd packages/ml && uv sync
+        run: cd packages/ml && uv sync --frozen
 
       - name: Lint ML
         run: cd packages/ml && uv run ruff check .
 
+      - name: Test ML
+        run: |
+          if [ ! -d packages/ml/tests ]; then
+            echo "No ML test directory found"
+            exit 0
+          fi
+
+          if ! find packages/ml/tests -type f \( -name "test_*.py" -o -name "*_test.py" \) | grep -q .; then
+            echo "No ML tests found"
+            exit 0
+          fi
+
+          cd packages/ml
+          uv run pytest tests
+
       - name: Build containers
-        run: docker compose build
+        run: docker compose -f docker-compose.yml -f infra/compose/docker-compose.ci.yml build
 
       - name: Start services
-        run: docker compose up -d
+        run: docker compose -f docker-compose.yml -f infra/compose/docker-compose.ci.yml up -d
 
       - name: Smoke test
         run: |
@@ -45,4 +81,8 @@ jobs:
 
       - name: Show logs on failure
         if: failure()
-        run: docker compose logs
+        run: docker compose -f docker-compose.yml -f infra/compose/docker-compose.ci.yml logs
+
+      - name: Stop services
+        if: always()
+        run: docker compose -f docker-compose.yml -f infra/compose/docker-compose.ci.yml down -v

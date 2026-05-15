@@ -10,7 +10,6 @@ dependencies = []
 members = [
     "packages/backend",
     "packages/frontend",
-    "packages/mock_store_api",
 ]
 
 [dependency-groups]
@@ -47,14 +46,12 @@ line-ending = "auto"
 testpaths = [
     "packages/backend/tests",
     "packages/frontend/tests",
-    "packages/mock_store_api/tests",
     "tests"
 ]
 asyncio_mode = "auto"
 pythonpath = [
     "packages/backend/src",
     "packages/frontend/src",
-    "packages/mock_store_api/src",
 ]
 
 [tool.mypy]

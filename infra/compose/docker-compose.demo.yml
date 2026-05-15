@@ -15,14 +15,6 @@ services:
       ML_ENABLE_STUB: ${ML_ENABLE_STUB:-1}
       MODEL_PATH: /app/models/price_tag_detector.pt
     restart: unless-stopped
-
-  mock-store-api:
-    environment:
-      APP_ENV: demo
-      LOG_LEVEL: INFO
-      DEMO_MODE: "1"
-    restart: unless-stopped
-
   demo-dashboard:
     build:
       context: .

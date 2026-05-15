@@ -28,7 +28,6 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-price_audit}:${POSTGRES_PASSWORD:-price_audit}@postgres:5432/${POSTGRES_DB:-price_audit}
       ML_URL: http://ml:8000
-      STORE_API_URL: http://mock-store-api:8002
       AUTO_CREATE_TABLES: ${AUTO_CREATE_TABLES:-1}
     ports:
       - "${BACKEND_PORT:-8001}:8001"
@@ -36,8 +35,6 @@ services:
       postgres:
         condition: service_healthy
       ml:
-        condition: service_healthy
-      mock-store-api:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
@@ -63,24 +60,6 @@ services:
       - ./data:/app/data
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
-
-  mock-store-api:
-    build:
-      context: .
-      dockerfile: infra/docker/mock-store-api.Dockerfile
-    container_name: price-audit-mock-store-api
-    environment:
-      APP_ENV: ${APP_ENV:-dev}
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
-    ports:
-      - "${MOCK_STORE_API_PORT:-8002}:8002"
-    volumes:
-      - ./data:/app/data
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
       interval: 5s
       timeout: 3s
       retries: 20
