@@ -1,0 +1,53 @@
+[project]
+name = "experiments"
+version = "0.1.0"
+description = "Backend API and business logic for retail price tag audit"
+requires-python = ">=3.12"
+dependencies = [
+    "pandas",
+    "opencv-contrib-python",
+    "qreader",
+    "pyzbar",
+    "zxing-cpp",
+    "numpy",
+    "pillow",
+    "marimo>=0.23.6",
+    "matplotlib>=3.10.9",
+    "realesrgan",
+    "basicsr",
+    "paddlepaddle",
+    "paddleocr",
+]
+
+[project.scripts]
+experiments = "experiments.main:run"
+
+[tool.uv.sources]
+shared = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "altair>=6.1.0",
+    "duckdb>=1.5.2",
+    "mcp>=1",
+    "nbformat>=5.10.4",
+    "openai>=2.36.0",
+    "polars[pyarrow]>=1.40.1",
+    "pydantic>=2",
+    "python-lsp-ruff>=2.3.1",
+    "python-lsp-server>=1.14.0",
+    "sqlglot>=30.8.0",
+    "vegafusion>=2.0.3",
+    "vl-convert-python>=1.9.0.post1",
+    "websockets>=16.0",
+]
+
+[tool.uv]
+package = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/experiments"]
