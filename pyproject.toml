@@ -9,7 +9,6 @@ dependencies = []
 [tool.uv.workspace]
 members = [
     "packages/backend",
-    "packages/frontend",
 ]
 
 [dependency-groups]
@@ -45,13 +44,11 @@ line-ending = "auto"
 [tool.pytest.ini_options]
 testpaths = [
     "packages/backend/tests",
-    "packages/frontend/tests",
     "tests"
 ]
 asyncio_mode = "auto"
 pythonpath = [
     "packages/backend/src",
-    "packages/frontend/src",
 ]
 
 [tool.mypy]

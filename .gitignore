@@ -24,6 +24,9 @@ share/python-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+.run/
+.*/
+packages/frontend/.vite
 MANIFEST
 
 # PyInstaller
@@ -217,3 +220,32 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
+# Local datasets / videos
+packages/ml/src/ml/data/**/*.mp4
+packages/ml/src/ml/data/**/*.avi
+packages/ml/src/ml/data/**/*.mov
+packages/ml/src/ml/data/**/*.mkv
+
+# Detection / training outputs
+packages/ml/src/ml/runs/
+packages/ml/src/ml/outputs/
+runs/
+outputs/
+
+# Model weights / exported models
+*.pt
+*.pth
+*.onnx
+*.rknn
+*.engine
+
+# Large media files
+*.mp4
+*.avi
+*.mov
+*.mkv
+
+# Frontend (React)
+packages/frontend/node_modules/
+packages/frontend/dist/
+npm-debug.log*

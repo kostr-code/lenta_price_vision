@@ -20,28 +20,28 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Sync backend/frontend
-        run: uv sync --frozen
+      - name: Sync backend
+        run: uv sync --frozen --all-packages
 
-      - name: Lint backend/frontend
+      - name: Lint backend
         run: uv run ruff check .
 
-      - name: Test backend/frontend
+      - name: Test backend
         run: |
           test_dirs=()
-          for dir in packages/backend/tests packages/frontend/tests tests; do
+          for dir in packages/backend/tests tests; do
             if [ -d "$dir" ]; then
               test_dirs+=("$dir")
             fi
           done
 
           if [ "${#test_dirs[@]}" -eq 0 ]; then
-            echo "No backend/frontend test directories found"
+            echo "No backend test directories found"
             exit 0
           fi
 
           if ! find "${test_dirs[@]}" -type f \( -name "test_*.py" -o -name "*_test.py" \) | grep -q .; then
-            echo "No backend/frontend tests found"
+            echo "No backend tests found"
             exit 0
           fi
 

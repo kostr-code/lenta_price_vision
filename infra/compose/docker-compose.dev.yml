@@ -8,6 +8,7 @@ services:
       APP_ENV: dev
       LOG_LEVEL: DEBUG
       AUTO_CREATE_TABLES: "1"
+      ML_URL: ${ML_URL:-http://host.docker.internal:8000}
     command:
       [
         "uv",
@@ -21,25 +22,22 @@ services:
         "--reload"
       ]
 
-  ml:
-    volumes:
-      - ./packages/ml/src:/app/packages/ml/src
-      - ./models:/app/models
-      - ./data:/app/data
+  frontend:
+    image: node:20-alpine
+    container_name: price-audit-frontend-dev
+    working_dir: /app/packages/frontend
     environment:
-      APP_ENV: dev
-      LOG_LEVEL: DEBUG
-      ML_DEVICE: cpu
-      ML_ENABLE_STUB: "1"
+      VITE_BACKEND_URL: ${VITE_BACKEND_URL:-http://localhost:8001}
+    volumes:
+      - ./:/app
+    ports:
+      - "${FRONTEND_PORT:-5173}:5173"
+    depends_on:
+      backend:
+        condition: service_healthy
     command:
       [
-        "uv",
-        "run",
-        "uvicorn",
-        "ml.main:app",
-        "--host",
-        "0.0.0.0",
-        "--port",
-        "8000",
-        "--reload"
+        "sh",
+        "-lc",
+        "npm install && npm run dev -- --host 0.0.0.0 --port 5173"
       ]

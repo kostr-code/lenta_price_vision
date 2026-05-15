@@ -5,26 +5,11 @@ services:
       LOG_LEVEL: INFO
       AUTO_CREATE_TABLES: "1"
       DEMO_MODE: "1"
+      ML_URL: ${ML_URL:-http://host.docker.internal:8000}
+      MODEL_PATH: ${MODEL_PATH:-/app/models/price_tag_detector.pt}
+    volumes:
+      - ./models:/app/models:ro
     restart: unless-stopped
 
-  ml:
-    environment:
-      APP_ENV: demo
-      LOG_LEVEL: INFO
-      ML_DEVICE: cpu
-      ML_ENABLE_STUB: ${ML_ENABLE_STUB:-1}
-      MODEL_PATH: /app/models/price_tag_detector.pt
-    restart: unless-stopped
-  demo-dashboard:
-    build:
-      context: .
-      dockerfile: infra/docker/demo-dashboard.Dockerfile
-    container_name: price-audit-demo-dashboard
-    environment:
-      BACKEND_URL: http://backend:8001
-    ports:
-      - "${DEMO_DASHBOARD_PORT:-8501}:8501"
-    depends_on:
-      backend:
-        condition: service_healthy
+  frontend:
     restart: unless-stopped

@@ -27,14 +27,14 @@ services:
       APP_ENV: ${APP_ENV:-dev}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-price_audit}:${POSTGRES_PASSWORD:-price_audit}@postgres:5432/${POSTGRES_DB:-price_audit}
-      ML_URL: http://ml:8000
+      ML_URL: ${ML_URL:-http://host.docker.internal:8000}
       AUTO_CREATE_TABLES: ${AUTO_CREATE_TABLES:-1}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "${BACKEND_PORT:-8001}:8001"
     depends_on:
       postgres:
-        condition: service_healthy
-      ml:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
@@ -42,24 +42,20 @@ services:
       timeout: 3s
       retries: 20
 
-  ml:
+  frontend:
     build:
       context: .
-      dockerfile: infra/docker/ml.Dockerfile
-    container_name: price-audit-ml
-    environment:
-      APP_ENV: ${APP_ENV:-dev}
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
-      ML_DEVICE: ${ML_DEVICE:-cpu}
-      MODEL_PATH: ${MODEL_PATH:-/app/models/price_tag_detector.pt}
-      ML_ENABLE_STUB: ${ML_ENABLE_STUB:-1}
+      dockerfile: infra/docker/frontend.Dockerfile
+      args:
+        VITE_BACKEND_URL: ${VITE_BACKEND_URL:-http://localhost:8001}
+    container_name: price-audit-frontend
     ports:
-      - "${ML_PORT:-8000}:8000"
-    volumes:
-      - ./models:/app/models
-      - ./data:/app/data
+      - "${FRONTEND_PORT:-5173}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD-SHELL", "wget -q -O - http://localhost > /dev/null 2>&1 || exit 1"]
       interval: 5s
       timeout: 3s
       retries: 20
