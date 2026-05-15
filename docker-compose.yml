@@ -50,12 +50,12 @@ services:
         VITE_BACKEND_URL: ${VITE_BACKEND_URL:-http://localhost:8001}
     container_name: price-audit-frontend
     ports:
-      - "${FRONTEND_PORT:-5173}:80"
+      - "${FRONTEND_PORT:-5173}:4173"
     depends_on:
       backend:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O - http://localhost > /dev/null 2>&1 || exit 1"]
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:4173 > /dev/null 2>&1 || exit 1"]
       interval: 5s
       timeout: 3s
       retries: 20
