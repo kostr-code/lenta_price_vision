@@ -23,18 +23,24 @@ services:
       ]
 
   frontend:
+    build: !reset null
     image: node:20-alpine
-    container_name: price-audit-frontend-dev
+    container_name: price-audit-frontend
     working_dir: /app/packages/frontend
     environment:
       VITE_BACKEND_URL: ${VITE_BACKEND_URL:-http://localhost:8001}
     volumes:
       - ./:/app
-    ports:
+    ports: !override
       - "${FRONTEND_PORT:-5173}:5173"
     depends_on:
       backend:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:5173 > /dev/null 2>&1 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
     command:
       [
         "sh",
