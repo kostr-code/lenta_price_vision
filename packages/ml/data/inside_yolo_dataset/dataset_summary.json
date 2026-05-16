@@ -1,0 +1,38 @@
+{
+  "source": "F:\\lenta_branch_Vitya\\lenta_price_vision\\packages\\ml\\data\\inside_data",
+  "out": "F:\\lenta_branch_Vitya\\lenta_price_vision\\packages\\ml\\data\\inside_yolo_dataset",
+  "classes": [
+    "product_name",
+    "qr_code",
+    "price_default",
+    "price_card",
+    "price_discount",
+    "barcode",
+    "discount_amount",
+    "id_sku",
+    "print_datetime",
+    "code",
+    "additional_info",
+    "special_symbols"
+  ],
+  "class_counts": {
+    "product_name": 21,
+    "qr_code": 21,
+    "price_default": 22,
+    "price_card": 19,
+    "price_discount": 0,
+    "barcode": 12,
+    "discount_amount": 16,
+    "id_sku": 7,
+    "print_datetime": 2,
+    "code": 3,
+    "additional_info": 20,
+    "special_symbols": 3
+  },
+  "train_images": 21,
+  "unlabeled_images": 71,
+  "empty_label_files": 71,
+  "total_boxes": 146,
+  "missing_images_for_labels": [],
+  "split": "none; val points to train in data.yaml"
+}

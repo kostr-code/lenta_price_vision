@@ -1,0 +1,17 @@
+path: F:/lenta_branch_Vitya/lenta_price_vision/packages/ml/data/inside_yolo_dataset
+train: images/train
+val: images/train
+
+names:
+  0: product_name
+  1: qr_code
+  2: price_default
+  3: price_card
+  4: price_discount
+  5: barcode
+  6: discount_amount
+  7: id_sku
+  8: print_datetime
+  9: code
+  10: additional_info
+  11: special_symbols
