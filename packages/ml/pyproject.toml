@@ -54,6 +54,8 @@ dev = [
 
 [project.scripts]
 ml-service = "ml.main:run"
+ml-enhance-crops = "ml.crop_enhancement:main"
+ml-extract-price-tags-qr = "ml.extract_price_tags_qr:main"
 
 [build-system]
 requires = ["hatchling"]

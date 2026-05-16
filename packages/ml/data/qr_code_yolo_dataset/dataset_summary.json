@@ -1,0 +1,16 @@
+﻿{
+    "source":  "F:\\lenta_branch_Vitya\\lenta_price_vision\\packages\\ml\\data\\train_qr-code",
+    "output":  "F:\\lenta_branch_Vitya\\lenta_price_vision\\packages\\ml\\data\\qr_code_yolo_dataset",
+    "seed":  42,
+    "total_images":  114,
+    "labeled_pairs":  92,
+    "skipped_without_label":  22,
+    "train_images":  74,
+    "val_images":  18,
+    "train_ratio":  0.8043,
+    "val_ratio":  0.1957,
+    "classes":  [
+                    "qr-code"
+                ],
+    "split":  "grouped_by_track_id"
+}

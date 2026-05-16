@@ -1,0 +1,6 @@
+﻿path: F:/lenta_branch_Vitya/lenta_price_vision/packages/ml/data/qr_code_yolo_dataset
+train: images/train
+val: images/val
+test: ''
+names:
+  0: qr-code
