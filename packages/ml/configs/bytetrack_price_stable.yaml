@@ -1,0 +1,14 @@
+# Based on bytetrack_price.yaml.
+# Pipeline-only setting: final CSV/debug tracks are emitted only after this
+# many observations of the same physical price tag.
+min_track_hits: 3
+
+tracker_type: bytetrack
+
+track_high_thresh: 0.25
+track_low_thresh: 0.05
+new_track_thresh: 0.25
+
+track_buffer: 60
+match_thresh: 0.80
+fuse_score: true

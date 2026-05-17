@@ -19,6 +19,7 @@ from .media import (
     enhance_crop,
     expand_price_tag_crop,
     image_metadata,
+    import_cv2,
     iter_sampled_frames,
     laplacian_sharpness,
     load_image,
@@ -39,6 +40,7 @@ from .text_reader import TextReader, TextReaderConfig
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 DEFAULT_DATA_DIR = PACKAGE_DIR / "data"
+TRACKER_APP_ONLY_KEYS = {"min_track_hits", "stable_min_track_hits"}
 
 
 @dataclass(frozen=True)
@@ -94,6 +96,7 @@ class PipelineConfig:
     derive_qr_fields_when_missing: bool = False
     save_crops: bool = False
     save_debug_json: bool = True
+    save_tracking_video: bool = False
 
     @classmethod
     def from_mode(cls, mode: str, **overrides: Any) -> PipelineConfig:
@@ -134,6 +137,7 @@ class PipelineRunResult:
     debug_json: str | None
     debug_tracks_json: str | None
     debug_detections_json: str | None
+    tracking_video: str | None
     rows: int
     frames_seen: int
     detections_seen: int
@@ -220,14 +224,7 @@ class RetailShelfPipeline:
         if self.config.save_crops:
             crops_dir.mkdir(parents=True, exist_ok=True)
 
-        tracker = EvidenceFusionTracker(
-            FusionConfig(
-                tracker_iou=self.config.tracker_iou,
-                tracker_center_threshold=self.config.tracker_center_threshold,
-                max_lost=self.config.max_lost,
-                min_track_observations=self.config.min_track_observations,
-            )
-        )
+        tracker = EvidenceFusionTracker(self._fusion_config())
         debug: dict[str, Any] = {
             "video": str(video_path),
             "config": asdict(self.config),
@@ -325,6 +322,7 @@ class RetailShelfPipeline:
             debug_json=str(debug_path) if debug_path else None,
             debug_tracks_json=str(debug_tracks_path) if debug_tracks_path else None,
             debug_detections_json=str(debug_detections_path) if debug_detections_path else None,
+            tracking_video=None,
             rows=len(records),
             frames_seen=frames_seen,
             detections_seen=detections_seen,
@@ -345,19 +343,14 @@ class RetailShelfPipeline:
         metadata = video_metadata(video_path)
         fps = float(metadata.get("fps") or 0.0)
         vid_stride = sample_stride(fps, self.config.sample_fps)
-        tracker = EvidenceFusionTracker(
-            FusionConfig(
-                tracker_iou=self.config.tracker_iou,
-                tracker_center_threshold=self.config.tracker_center_threshold,
-                max_lost=self.config.max_lost,
-                min_track_observations=self.config.min_track_observations,
-            )
-        )
+        tracker = EvidenceFusionTracker(self._fusion_config())
+        tracker_config_argument = self._tracker_config_argument(output_dir)
         debug: dict[str, Any] = {
             "video": str(video_path),
             "config": asdict(self.config),
             "tracking_backend": "bytetrack",
-            "tracker_config": self._tracker_config_argument(),
+            "tracker_config": tracker_config_argument,
+            "min_track_observations": self._effective_min_track_observations(),
             "vid_stride": vid_stride,
             "frames": [],
         }
@@ -366,6 +359,13 @@ class RetailShelfPipeline:
         deferred_crops: dict[str, list[DeferredCropCandidate]] = {}
         frames_seen = 0
         detections_seen = 0
+        tracking_video_path = (
+            output_dir / f"{video_path.stem}_yolo_bytetrack.mp4"
+            if self.config.save_tracking_video
+            else None
+        )
+        tracking_video_writer: Any | None = None
+        tracking_video_fps = max(1.0, fps / max(1, vid_stride)) if fps > 0 else 1.0
 
         track_kwargs: dict[str, Any] = {}
         if self.config.detector_device:
@@ -378,7 +378,7 @@ class RetailShelfPipeline:
             conf=self.config.yolo_conf,
             iou=self.config.detector_iou,
             imgsz=self.config.detector_imgsz,
-            tracker=self._tracker_config_argument(),
+            tracker=tracker_config_argument,
             vid_stride=vid_stride,
             verbose=False,
             **track_kwargs,
@@ -387,6 +387,13 @@ class RetailShelfPipeline:
         for frame_order, result in enumerate(results):
             if self.config.max_frames > 0 and frames_seen >= self.config.max_frames:
                 break
+
+            tracking_video_writer = write_tracking_frame(
+                writer=tracking_video_writer,
+                output_path=tracking_video_path,
+                result=result,
+                fps=tracking_video_fps,
+            )
 
             frame_image = result.orig_img
             frame_index = frame_order * vid_stride
@@ -444,6 +451,9 @@ class RetailShelfPipeline:
                 }
             )
 
+        if tracking_video_writer is not None:
+            tracking_video_writer.release()
+
         deferred_reads = self._process_deferred_crops(video_path, tracker, deferred_crops)
         detection_events.extend(deferred_reads)
         records = tracker.finalize()
@@ -485,6 +495,11 @@ class RetailShelfPipeline:
             debug_json=str(debug_path) if debug_path else None,
             debug_tracks_json=str(debug_tracks_path) if debug_tracks_path else None,
             debug_detections_json=str(debug_detections_path) if debug_detections_path else None,
+            tracking_video=(
+                str(tracking_video_path)
+                if tracking_video_path is not None and tracking_video_path.exists()
+                else None
+            ),
             rows=len(records),
             frames_seen=frames_seen,
             detections_seen=detections_seen,
@@ -498,14 +513,7 @@ class RetailShelfPipeline:
         if self.config.save_crops:
             crops_dir.mkdir(parents=True, exist_ok=True)
 
-        tracker = EvidenceFusionTracker(
-            FusionConfig(
-                tracker_iou=self.config.tracker_iou,
-                tracker_center_threshold=self.config.tracker_center_threshold,
-                max_lost=self.config.max_lost,
-                min_track_observations=self.config.min_track_observations,
-            )
-        )
+        tracker = EvidenceFusionTracker(self._fusion_config())
         debug: dict[str, Any] = {
             "image": str(image_path),
             "config": asdict(self.config),
@@ -593,6 +601,7 @@ class RetailShelfPipeline:
             debug_json=str(debug_path) if debug_path else None,
             debug_tracks_json=str(debug_tracks_path) if debug_tracks_path else None,
             debug_detections_json=str(debug_detections_path) if debug_detections_path else None,
+            tracking_video=None,
             rows=len(records),
             frames_seen=1,
             detections_seen=detections_seen,
@@ -867,13 +876,47 @@ class RetailShelfPipeline:
             self.config.yolo_weights
         )
 
-    def _tracker_config_argument(self) -> str:
+    def _fusion_config(self) -> FusionConfig:
+        return FusionConfig(
+            tracker_iou=self.config.tracker_iou,
+            tracker_center_threshold=self.config.tracker_center_threshold,
+            max_lost=self.config.max_lost,
+            min_track_observations=self._effective_min_track_observations(),
+        )
+
+    def _effective_min_track_observations(self) -> int:
+        minimum = max(1, int(self.config.min_track_observations))
+        tracker_path = self._resolved_tracker_config_path()
+        if tracker_path is None:
+            return minimum
+
+        tracker_values = read_yaml_mapping(tracker_path)
+        for key in ("min_track_hits", "stable_min_track_hits"):
+            try:
+                minimum = max(minimum, int(tracker_values.get(key)))
+            except (TypeError, ValueError):
+                continue
+        return minimum
+
+    def _tracker_config_argument(self, output_dir: Path | None = None) -> str:
+        tracker_path = self._resolved_tracker_config_path()
+        if tracker_path is None:
+            return "bytetrack.yaml"
+        if output_dir is not None:
+            runtime_path = write_runtime_tracker_config(tracker_path, output_dir)
+            if runtime_path is not None:
+                return str(runtime_path)
+        return str(tracker_path)
+
+    def _resolved_tracker_config_path(self) -> Path | None:
         if self.config.tracker_config:
-            return resolve_config_path(self.config.tracker_config)
+            resolved = resolve_config_path(self.config.tracker_config)
+            path = Path(resolved)
+            return path if path.exists() else None
         package_config = PACKAGE_DIR / "configs" / "bytetrack_price.yaml"
         if package_config.exists():
-            return str(package_config)
-        return "bytetrack.yaml"
+            return package_config
+        return None
 
     def _candidates_from_track_result(
         self,
@@ -989,6 +1032,63 @@ def default_yolo_weights() -> str | None:
         if path.exists():
             return str(path)
     return None
+
+
+def write_tracking_frame(
+    writer: Any | None,
+    output_path: Path | None,
+    result: Any,
+    fps: float,
+) -> Any | None:
+    if output_path is None:
+        return writer
+
+    try:
+        frame = result.plot()
+        if frame is None:
+            frame = result.orig_img
+        height, width = frame.shape[:2]
+        cv2 = import_cv2()
+        if writer is None:
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+            writer = cv2.VideoWriter(str(output_path), fourcc, max(1.0, fps), (width, height))
+            if not writer.isOpened():
+                return None
+        writer.write(frame)
+    except Exception:
+        return writer
+    return writer
+
+
+def read_yaml_mapping(path: Path) -> dict[str, Any]:
+    try:
+        import yaml  # type: ignore
+
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def write_runtime_tracker_config(tracker_path: Path, output_dir: Path) -> Path | None:
+    data = read_yaml_mapping(tracker_path)
+    if not data or not any(key in data for key in TRACKER_APP_ONLY_KEYS):
+        return None
+
+    runtime_data = {
+        key: value for key, value in data.items() if key not in TRACKER_APP_ONLY_KEYS
+    }
+    runtime_path = output_dir / "_bytetrack_runtime.yaml"
+    try:
+        import yaml  # type: ignore
+
+        runtime_path.write_text(
+            yaml.safe_dump(runtime_data, sort_keys=False, allow_unicode=True),
+            encoding="utf-8",
+        )
+    except Exception:
+        return None
+    return runtime_path
 
 
 def resolve_config_path(value: str) -> str:

@@ -445,6 +445,8 @@ def run_pipeline(
         response["debug_tracks_download"] = download_hint(Path(result.debug_tracks_json))
     if result.debug_detections_json:
         response["debug_detections_download"] = download_hint(Path(result.debug_detections_json))
+    if result.tracking_video:
+        response["tracking_video_download"] = download_hint(Path(result.tracking_video))
     return response
 
 

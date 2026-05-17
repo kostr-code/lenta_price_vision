@@ -40,6 +40,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--disable-ocr", action="store_true")
     parser.add_argument("--disable-qr", action="store_true")
     parser.add_argument("--save-crops", action="store_true")
+    parser.add_argument("--save-tracking-video", action="store_true")
     parser.add_argument("--no-debug-json", action="store_true")
     return parser.parse_args()
 
@@ -85,6 +86,7 @@ def config_overrides_from_args(args: argparse.Namespace) -> dict[str, Any]:
         "enable_ocr": False if args.disable_ocr else None,
         "enable_qr": False if args.disable_qr else None,
         "save_crops": True if args.save_crops else None,
+        "save_tracking_video": True if args.save_tracking_video else None,
         "save_debug_json": False if args.no_debug_json else None,
     }
     return {key: value for key, value in values.items() if value is not None}
@@ -159,6 +161,7 @@ def config_overrides_from_file(path: Path | None) -> dict[str, Any]:
             "use_tesseract_fallback": ocr.get("use_tesseract_fallback"),
             "derive_qr_fields_when_missing": data.get("parser", {}).get("derive_qr_fields"),
             "save_debug_json": output.get("write_debug_json"),
+            "save_tracking_video": output.get("write_tracking_video"),
         }
     )
     return {key: value for key, value in values.items() if value is not None}
