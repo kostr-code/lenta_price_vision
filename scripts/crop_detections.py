@@ -123,7 +123,7 @@ def main() -> int:
             print(f"  [skip] {img_dir} not found")
             continue
         out_dir = out_root / split
-        print(f"[crops] Processing {img_dir} → {out_dir}")
+        print(f"[crops] Processing {img_dir} -> {out_dir}")
         records = run_detector(
             weights, img_dir, out_dir, args.conf, args.imgsz, args.device
         )
@@ -151,7 +151,7 @@ def main() -> int:
             )
             writer.writeheader()
             writer.writerows(all_records)
-        print(f"[crops] manifest → {manifest}  ({len(all_records)} total)")
+        print(f"[crops] manifest -> {manifest}  ({len(all_records)} total)")
     return 0
 
 

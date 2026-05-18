@@ -8,7 +8,7 @@
 #
 # TODO(коллега):
 #   1. Подтвердить датасет: runs/datasets/lenta_inside_yolo/data.yaml
-#      (собирается через: just crop-for-stage2 → разметка в CVAT → just prepare-cvat)
+#      (собирается через: just crop-for-stage2 -> разметка в CVAT -> just prepare-cvat)
 #   2. Стартовать с Stage 1 весов (трансфер) или с pretrained yolo26n.pt?
 #      Сейчас default = Stage 1 веса (трансфер обычно лучше для похожего домена)
 #   3. Классы внутри ценника — что именно детектируем? (barcode, qr, price_zone, ...)
@@ -74,5 +74,5 @@ uv run yolo detect train \
     plots=True
 
 echo ""
-echo "[done] Best weights → $RUNS_DIR/inside_price_tag_yolo/weights/best.pt"
+echo "[done] Best weights -> $RUNS_DIR/inside_price_tag_yolo/weights/best.pt"
 echo "       Run: just save-yolo2   to copy to models/inside_price_tag_yolo.pt"

@@ -396,7 +396,7 @@ def _render_card(item: AnnotationPreview, out_dir: Path) -> str:
 
 def main() -> int:
     p = argparse.ArgumentParser(
-        description="Галерея YOLO-разметки: bbox поверх изображений → index.html"
+        description="Галерея YOLO-разметки: bbox поверх изображений -> index.html"
     )
     p.add_argument(
         "--dataset",
@@ -435,7 +435,7 @@ def main() -> int:
         shuffle=not args.no_shuffle,
         include_empty=not args.hide_empty,
     )
-    print(f"[preview] → {index_path.resolve()}")
+    print(f"[preview] -> {index_path.resolve()}")
     return 0
 
 

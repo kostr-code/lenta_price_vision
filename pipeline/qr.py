@@ -22,7 +22,7 @@ try:
 except ImportError:
     _HAS_PYZBAR = False
 
-# QR payload field mapping (all known aliases → CSV column name)
+# QR payload field mapping (all known aliases -> CSV column name)
 QR_TO_CSV: dict[str, str] = {
     # short aliases
     "b":    "qr_code_barcode",
@@ -138,7 +138,7 @@ def parse_qr_payload(text: str) -> dict[str, str]:
     """
     Parse QR payload string into CSV field dict.
 
-    Example: "b=4670025474665&p1=252.63&p2=239.99" →
+    Example: "b=4670025474665&p1=252.63&p2=239.99" ->
              {"qr_code_barcode": "4670025474665", "price1_qr": "252.63", ...}
     """
     try:

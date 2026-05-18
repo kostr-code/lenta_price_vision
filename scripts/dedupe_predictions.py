@@ -106,7 +106,7 @@ def main() -> int:
         total_in += len(lines)
         total_out += len(kept)
 
-    print(f"[dedup] {total_in} → {total_out} labels ({total_in - total_out} removed)")
+    print(f"[dedup] {total_in} -> {total_out} labels ({total_in - total_out} removed)")
     return 0
 
 

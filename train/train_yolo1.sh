@@ -57,5 +57,5 @@ uv run yolo detect train \
     seed=42
 
 echo ""
-echo "[done] Best weights → $RUNS_DIR/price_tag_yolo/weights/best.pt"
+echo "[done] Best weights -> $RUNS_DIR/price_tag_yolo/weights/best.pt"
 echo "       Run: just save-yolo1   to copy to models/price_tag_yolo.pt"

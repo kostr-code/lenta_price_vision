@@ -3,8 +3,8 @@ pipeline/ocr.py — PaddleOCR wrapper, zone splitting, and artifact masking.
 
 Key functions:
   load_ocr()              — load PaddleOCR model
-  ocr_to_lines()          — run OCR on single image → List[OCRLine]
-  ocr_zoned()             — run OCR on 6 zones + deduplicate → List[OCRLine]
+  ocr_to_lines()          — run OCR on single image -> List[OCRLine]
+  ocr_zoned()             — run OCR on 6 zones + deduplicate -> List[OCRLine]
   suppress_code_artifacts() — mask QR/barcode regions before OCR
   enhance_crop()          — CLAHE + unsharp mask
   split_price_tag_zones() — split crop into 6 overlapping zones
@@ -90,7 +90,7 @@ def suppress_code_artifacts(image_bgr: np.ndarray) -> np.ndarray:
         bg = np.percentile(out.reshape(-1, 3), 88, axis=0).astype(np.uint8).tolist()
         cv2.rectangle(out, (x1, y1), (x2, y2), bg, thickness=-1)
 
-    # If 6+ small code boxes cluster together → mask the whole region
+    # If 6+ small code boxes cluster together -> mask the whole region
     if len(small_code_boxes) >= 6:
         x1 = min(box[0] for box in small_code_boxes)
         y1 = min(box[1] for box in small_code_boxes)

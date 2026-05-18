@@ -56,7 +56,7 @@ train-yolo1 dataset="runs/datasets/lenta_yolo":
 save-yolo1 run="price_tag_yolo":
     mkdir -p models
     cp runs/detect/{{run}}/weights/best.pt models/price_tag_yolo.pt
-    @echo "Сохранено → models/price_tag_yolo.pt"
+    @echo "Сохранено -> models/price_tag_yolo.pt"
 
 # ── Stage 2: внутренние элементы ценника ──
 
@@ -84,14 +84,14 @@ train-yolo2 dataset="runs/datasets/lenta_inside_yolo":
 save-yolo2 run="inside_price_tag_yolo":
     mkdir -p models
     cp runs/detect/{{run}}/weights/best.pt models/inside_price_tag_yolo.pt
-    @echo "Сохранено → models/inside_price_tag_yolo.pt"
+    @echo "Сохранено -> models/inside_price_tag_yolo.pt"
 
 # ── Псевдолейблинг (расширение датасета без ручной разметки)
 #
-# Stage 1: прогнать детектор ценников по unlabeled видео → кадры + YOLO-метки.
+# Stage 1: прогнать детектор ценников по unlabeled видео -> кадры + YOLO-метки.
 #   Сценарий: после первого обучения Stage 1 хочется добавить данных.
-#   1. just pseudo-label-stage1            ← сгенерировать псевдолейблы
-#   2. just dataset-review --dataset runs/pseudo/stage1_unlabeled  ← отчистить плохое
+#   1. just pseudo-label-stage1            <- сгенерировать псевдолейблы
+#   2. just dataset-review --dataset runs/pseudo/stage1_unlabeled  <- отчистить плохое
 #   3. Смерджить хорошее в основной датасет, переобучить Stage 1.
 pseudo-label-stage1 video_dir="data/Данные/Unlabeled" out="runs/pseudo/stage1_unlabeled":
     uv run python scripts/pseudo_label_stage1.py \
@@ -101,10 +101,21 @@ pseudo-label-stage1 video_dir="data/Данные/Unlabeled" out="runs/pseudo/sta
       --sample-every 25 \
       --conf 0.35
 
-# Stage 2: прогнать inside-детектор по кропам ценников → YOLO-метки + preview.
+# Stage 1 с ByteTrack: читает каждый кадр, сохраняет ОДИН кадр на уникальный ценник.
+#   Исключает дублирующиеся кадры -> чище датасет чем sample-every.
+#   Рабочий процесс тот же: сгенерировать -> dataset-review -> смерджить -> переобучить.
+pseudo-label-stage1-tracked video_dir="data/Данные/Unlabeled" out="runs/pseudo/stage1_tracked":
+    uv run python scripts/pseudo_label_stage1.py \
+      --video-dir {{video_dir}} \
+      --weights   models/price_tag_yolo.pt \
+      --out-dir   {{out}} \
+      --use-tracker \
+      --conf 0.35
+
+# Stage 2: прогнать inside-детектор по кропам ценников -> YOLO-метки + preview.
 #   Сценарий: после первого обучения Stage 2 нужно псевдоразметить остальные кропы.
-#   1. just pseudo-label-stage2            ← сгенерировать псевдолейблы
-#   2. just dataset-review --dataset runs/pseudo/stage2_inside  ← почистить
+#   1. just pseudo-label-stage2            <- сгенерировать псевдолейблы
+#   2. just dataset-review --dataset runs/pseudo/stage2_inside  <- почистить
 #   3. Импортировать в CVAT, доправить, добавить в датасет Stage 2, переобучить.
 pseudo-label-stage2 source="runs/datasets/lenta_yolo/crops_for_stage2" out="runs/pseudo/stage2_inside":
     uv run python scripts/pseudo_label_stage2.py \
@@ -115,6 +126,6 @@ pseudo-label-stage2 source="runs/datasets/lenta_yolo/crops_for_stage2" out="runs
 
 # ── Полный цикл Stage 1 (одной командой)
 
-# Весь Stage 1 pipeline: датасет → проверка → тренировка.
+# Весь Stage 1 pipeline: датасет -> проверка -> тренировка.
 # Веса НЕ копируются автоматически — сделать just save-yolo1 вручную после проверки.
 yolo1-full: dataset-build dataset-preview train-yolo1

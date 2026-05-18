@@ -13,7 +13,7 @@ cv2.matchTemplate и добавляет найденные кадры в train-s
 
 Template propagation:
     Позволяет умножить тренировочные данные без ручной разметки.
-    Если bbox после проверки "плывут" — повысить --match-threshold (0.42 → 0.72).
+    Если bbox после проверки "плывут" — повысить --match-threshold (0.42 -> 0.72).
 """
 
 from __future__ import annotations

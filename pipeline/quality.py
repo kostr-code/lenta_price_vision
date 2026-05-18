@@ -7,9 +7,9 @@ Laplacian variance alone is insufficient: H.264 DCT blocks create sharp edges at
 Three complementary metrics:
   - laplacian_var    : classic sharpness (fast, but fooled by compression blocks)
   - h264_artifact_score : boundary/interior gradient ratio at 8px grid
-                         >1.5 → strong block artifacts → crop likely poor
+                         >1.5 -> strong block artifacts -> crop likely poor
   - hf_ratio         : FFT high-frequency energy fraction
-                         <0.3 → too blurry for reliable OCR
+                         <0.3 -> too blurry for reliable OCR
 
 estimate_crop_quality() combines all three into a single [0, 1] score.
 """
@@ -30,7 +30,7 @@ def h264_artifact_score(gray: np.ndarray, block: int = 8) -> float:
     vs interior pixels.
 
     Returns ratio > 1.0 means boundaries are sharper than interior — artifact signal.
-    Rule of thumb: > 1.5 → significant artifacts → crop is low quality.
+    Rule of thumb: > 1.5 -> significant artifacts -> crop is low quality.
     """
     g = gray.astype(np.float32)
     boundary_v = np.mean(np.abs(np.diff(g[:, block - 1 :: block], axis=1)))
@@ -49,7 +49,7 @@ def hf_ratio(gray: np.ndarray) -> float:
     Low-frequency energy is concentrated in the central r=min(h,w)/4 circle.
     Ratio = energy outside that circle / total energy.
 
-    Rule of thumb: < 0.3 → image is too blurry for reliable OCR.
+    Rule of thumb: < 0.3 -> image is too blurry for reliable OCR.
     """
     f = np.abs(np.fft.fftshift(np.fft.fft2(gray.astype(np.float32))))
     h, w = gray.shape

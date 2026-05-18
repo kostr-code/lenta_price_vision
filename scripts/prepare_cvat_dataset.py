@@ -151,7 +151,7 @@ def main() -> int:
 
     print(f"[cvat] {len(pairs)} pairs  classes: {names}")
     write_dataset(pairs, names, out_dir, args.val_ratio, args.seed)
-    print(f"[cvat] dataset → {out_dir / 'data.yaml'}")
+    print(f"[cvat] dataset -> {out_dir / 'data.yaml'}")
     return 0
 
 

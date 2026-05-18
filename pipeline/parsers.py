@@ -2,7 +2,7 @@
 pipeline/parsers.py — Field extraction from OCR text and QR payloads.
 
 Adapted from competitor analysis. Key function:
-  parse_fields(lines, qr_payloads, crop_bgr) → Dict[str, str]
+  parse_fields(lines, qr_payloads, crop_bgr) -> Dict[str, str]
 
 Returns all extractable fields from the 29-column CSV schema.
 """
@@ -163,7 +163,7 @@ def _find_prices(text: str) -> list[str]:
         if len(prices) > before_count:
             occupied.append(match.span())
 
-    # Compact: "12999" → 129.99, "378949" → 3789.49
+    # Compact: "12999" -> 129.99, "378949" -> 3789.49
     for match in PRICE_COMPACT_RE.finditer(text):
         if any(not (match.end() <= a or match.start() >= b) for a, b in occupied):
             continue
@@ -261,7 +261,7 @@ def parse_fields(
         crop_bgr:    original crop image (for color classification)
 
     Returns:
-        dict with column names → string values ("нет" = field absent, "" = not recognized)
+        dict with column names -> string values ("нет" = field absent, "" = not recognized)
     """
     full_text = "\n".join(line.text for line in lines)
     full_text_norm = normalize_text(full_text)

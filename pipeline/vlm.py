@@ -145,7 +145,7 @@ def _parse_json_response(raw: str) -> dict[str, str]:
     except json.JSONDecodeError:
         return {}
 
-    # Convert null / None / "null" → "" (empty = not recognized)
+    # Convert null / None / "null" -> "" (empty = not recognized)
     result: dict[str, str] = {}
     for k, v in parsed.items():
         if v is None or str(v).lower() in ("null", "none", ""):
@@ -167,7 +167,7 @@ def extract_fields_vlm(
         prompt:   override the default extraction prompt
 
     Returns:
-        dict with keys from VLM_FIELDS (missing or null fields → "")
+        dict with keys from VLM_FIELDS (missing or null fields -> "")
 
     Raises:
         RuntimeError: if load_vlm() was not called first

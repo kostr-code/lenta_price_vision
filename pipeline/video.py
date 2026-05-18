@@ -1,6 +1,7 @@
 """
 pipeline/video.py — Video I/O and frame extraction utilities.
 """
+
 from __future__ import annotations
 
 import cv2
@@ -11,7 +12,7 @@ W_ORIG = 3840  # original video width before CCW rotation
 
 
 def load_df(path: str) -> pd.DataFrame:
-    """Load labeled CSV, normalizing bbox coordinates (comma → dot decimal)."""
+    """Load labeled CSV, normalizing bbox coordinates (comma -> dot decimal)."""
     df = pd.read_csv(path, dtype=str)
     df.columns = df.columns.str.strip()
     for col in ["x_min", "y_min", "x_max", "y_max"]:
@@ -23,7 +24,9 @@ def load_df(path: str) -> pd.DataFrame:
 
 
 def rotate_frame(raw: np.ndarray) -> np.ndarray:
-    """Apply 90° CCW rotation (standard for Lenta robot camera)."""
+    """
+    Apply 90° CCW rotation (standard for Lenta robot camera).
+    """
     return cv2.rotate(raw, cv2.ROTATE_90_COUNTERCLOCKWISE)
 
 
@@ -94,8 +97,8 @@ def cut_region(
     Cut a sub-region from a crop using fractional [0,1] coordinates.
 
     Usage examples:
-        barcode strip  → cut_region(crop, 0.20, 0.72, 0.90, 0.90)
-        QR sub-crop    → cut_region(crop, 0.60, 0.00, 1.00, 0.42)
+        barcode strip  -> cut_region(crop, 0.20, 0.72, 0.90, 0.90)
+        QR sub-crop    -> cut_region(crop, 0.60, 0.00, 1.00, 0.42)
     """
     h, w = crop.shape[:2]
     x1 = max(0, int(x1_frac * w))
