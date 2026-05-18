@@ -1,397 +1,363 @@
-# ML service
+# sol_main — Production Pipeline
 
-ML-часть отвечает за путь `video -> detections -> QR/OCR -> field voting -> CSV`.
-Решение работает локально, без cloud OCR/CV API. Ручная разметка не используется:
-YOLO-датасет собирается автоматически из public CSV/video, которые лежат в `data`.
+Путь: `video + labeled CSV → VLM/OCR → 29-field CSV`.
+
+Решение работает локально, без cloud API. Две независимые части:
+- **Inference pipeline** (`main.py` + `pipeline/`) — распознавание ценников через Qwen2.5-VL + PaddleOCR
+- **YOLO training pipeline** (`ml/` + `scripts/` + `train/`) — подготовка данных и обучение детекторов
+
+---
 
 ## Структура
 
 ```text
-ml/
-  main.py              # FastAPI: загрузка/путь к видео, eval, сборка датасета, train
-  pipeline.py          # основной пайплайн: видео -> CSV
-  candidates.py        # YOLO + tiled YOLO + QR-seed + color/geometry fallback
-  rail_roi.py          # поиск полосы полочной рейки и ограничение зоны детекции
-  qr_tools.py          # zxing-cpp / pyzbar / OpenCV QR decoding, multi-scale early exit
-  text_reader.py       # PaddleOCR + Tesseract ensemble
-  field_extractor.py   # парсинг полей ценника из OCR/QR
-  field_voting.py      # голосование по полям между кадрами и источниками
-  validators.py        # нормализация/валидация цен, barcode, SKU, дат, скидок, символов
-  crop_bank.py         # оценка crop: sharpness/area/conf/QR + pHash dedup
-  evidence_fusion.py   # объединение одного ценника между кадрами
-  field_derivation.py  # опциональный вывод QR-полей из OCR-полей
-  schema.py            # фиксированная CSV-схема задания
-  training.py          # сборка YOLO/tiled YOLO датасета и запуск обучения
-  media.py             # видео, кадры, bbox, crop enhancement
-  data/                # public-разметка и локальные видео для инференса
-  runs/                # результаты запусков, CSV, debug JSON, датасеты
+sol_main/
+  main.py              # CLI: video + labeled CSV → recognized CSV
+  pipeline/
+    video.py           # VideoCapture, find_best_frame, cut_crop, rotate CCW
+    parsers.py         # parse_fields, merge_field_values, OUTPUT_COLUMNS (29 полей)
+    ocr.py             # PaddleOCR zoned, enhance_crop, OCRLine
+    qr.py              # pyzbar / zxingcpp QR + barcode decode
+    quality.py         # estimate_crop_quality: h264_artifact_score + FFT hf_ratio
+    vlm.py             # Qwen2.5-VL-7B: load_vlm, extract_fields_vlm
+  ml/
+    training.py        # build_yolo_dataset: BBox, iter_tiles, full/tiled frames
+  scripts/
+    build_dataset.py   # CLI: labeled CSV/video → YOLO dataset + template propagation
+    preview_dataset.py # HTML-галерея с bbox поверх тайлов (проверка разметки)
+    crop_detections.py # Прогнать YOLO → сохранить кропы ценников (для Stage 2)
+    dedupe_predictions.py     # IoU NMS деdup predictions перед импортом в CVAT
+    prepare_cvat_dataset.py   # CVAT YOLO export → финальный YOLO датасет
+  train/
+    train_yolo1.sh     # Stage 1: детектор ценников (price_tag)
+    train_yolo2.sh     # Stage 2: внутренние элементы (barcode, qr, price zones...)
+  justfile             # рецепты для всех этапов
+  data/
+    Данные/            # labeled видео + CSV (не в git)
+    testdata/          # небольшие тестовые кропы
+  runs/                # датасеты, checkpoints, результаты (не в git)
+  models/              # веса YOLO (не в git)
 ```
 
-Аналоги отдельных `scripts/*.py` сделаны как API endpoints:
-
-```text
-POST /predict/path       # inference по локальному пути к видео
-POST /predict/video      # upload mp4 -> CSV
-POST /evaluate/public    # локальная proxy-оценка на public CSV/video
-POST /dataset/yolo       # сборка YOLO или tiled YOLO датасета
-POST /train/yolo         # обучение YOLO через ultralytics
-```
+---
 
 ## Установка
 
-Команды удобнее запускать из `packages/ml`:
-
-```powershell
-cd packages\ml
-uv sync --extra quality
+```bash
+cd sol_main
+uv sync
 ```
 
-`quality` extra ставит Python-зависимости для OCR/QR:
+Для OCR и QR (опционально):
+
+```bash
+uv add paddleocr paddlepaddle pyzbar zxing-cpp
+```
+
+Для YOLO training:
+
+```bash
+uv add ultralytics
+```
+
+---
+
+## Inference: распознавание ценников
+
+```bash
+uv run python main.py \
+    --video data/Данные/43_15/43_15.mp4 \
+    --csv   data/Данные/43_15/43_15.csv \
+    --out   runs/results/43_15_recognized.csv
+```
+
+Опции:
 
 ```text
-PaddleOCR + paddlepaddle
-pytesseract
-zxing-cpp
-pyzbar
+--model      Qwen/Qwen2.5-VL-7B-Instruct   HuggingFace model ID
+--ocr                                        включить PaddleOCR fallback
+--quality-thr  0.2                           порог качества кропа (warn below)
+--scan         20                            ±N кадров для поиска резкого
 ```
 
-Важно: `pytesseract` это Python-обертка. Для Tesseract нужен системный бинарник
-и языки `rus`/`eng`. Проверка:
-
-```powershell
-tesseract --list-langs
-```
-
-Проверка импортов:
-
-```powershell
-uv run python -c "import paddleocr, paddle, pytesseract, zxingcpp; import pyzbar.pyzbar; print('quality deps ok')"
-```
-
-## Запуск сервиса
-
-```powershell
-uv run ml-service
-```
-
-После запуска:
+Pipeline внутри:
 
 ```text
-http://localhost:8000/docs
+load_df (CSV) → find_best_frame (±scan) → cut_crop_from_row
+→ estimate_crop_quality (h264 + FFT)
+→ extract_fields_vlm (Qwen2.5-VL → JSON → 12 полей)
+→ [опционально] ocr_zoned (PaddleOCR → parse_fields → остаток полей)
+→ merge + normalize → save CSV (29 полей + _quality)
 ```
 
-Быстрая проверка без сервера:
-
-```powershell
-uv run python -c "from ml.main import app; print(app.title)"
-```
-
-## Где должны лежать данные
-
-Public-разметка ожидается здесь:
+Метрики качества кропа (`pipeline/quality.py`):
 
 ```text
-packages/ml/src/ml/data/
-  25_12-20/
-    *.mp4
-    *.csv
-  26_12-20/
-    *.mp4
-    *.csv
-  43_15/
-    *.mp4
-    *.csv
+h264_artifact_score   ratio DCT-boundary / interior gradients; >1.5 → блочные артефакты
+hf_ratio              FFT HF energy fraction; <0.3 → слишком размыто для OCR
+estimate_crop_quality  composite [0,1] = 0.4*lap_norm + 0.4*hf_norm - 0.2*artifact_penalty
 ```
 
-Названия файлов условные: пайплайн ищет в каждой папке первый CSV и подходящее MP4.
-Если stem не совпадает, берется самое крупное видео в папке.
+---
 
-Видео без разметки для обычного инференса удобно класть сюда:
+## YOLO Stage 1: детектор ценников
+
+### Шаг 1. Собрать датасет
+
+```bash
+# Тайловый датасет (рекомендуется для 4K видео)
+just dataset-build
+
+# Или вручную:
+uv run python scripts/build_dataset.py \
+    --data-dir data/Данные \
+    --out-dir  runs/datasets/lenta_yolo_tiled \
+    --tiled \
+    --propagate 8 \
+    --val-ratio 0.2
+```
+
+Параметры `build_dataset.py`:
 
 ```text
-packages/ml/src/ml/data/Unlabeled/
+--data-dir          Папка с подпапками, где лежат .mp4 + .csv
+--out-dir           Куда писать датасет
+--tiled             Режим 640px тайлов (иначе полные кадры)
+--tile-size    640  Размер тайла
+--tile-stride  512  Шаг между тайлами (перекрытие = tile_size - stride)
+--min-visibility 0.25  Мин. доля bbox в тайле чтобы взять label
+--propagate    8    Кол-во соседних кадров для template propagation (0=выкл)
+--match-threshold 0.42  cv2.matchTemplate score threshold
+                        0.42 = лояльный; 0.72 = строгий (если bbox плывут)
+--search-pad   80   Поиск в bbox ± N пикселей
+--val-ratio    0.2  Доля val
 ```
 
-Для `POST /predict/path` видео может лежать где угодно, если передать полный путь.
+Template propagation: для каждого кадра с bbox ищет те же ценники в
+соседних кадрах через `cv2.matchTemplate`. Умножает тренировочные данные
+без ручной разметки. Используется только для train split.
 
-## Где должны лежать модели
-
-Рекомендуемое место для обученного YOLO-детектора:
+Результат:
 
 ```text
-models/price_tag_yolo.pt
+runs/datasets/lenta_yolo_tiled/
+  data.yaml
+  images/train/   *.jpg
+  images/val/     *.jpg
+  labels/train/   *.txt  (YOLO format: class cx cy w h, normalized)
+  labels/val/     *.txt
 ```
 
-Пайплайн ищет веса автоматически в:
+### Шаг 2. Проверить разметку глазами
+
+```bash
+just dataset-preview  # генерирует runs/datasets/lenta_yolo_tiled/preview_train/index.html
+
+# Или вручную:
+uv run python scripts/preview_dataset.py \
+    --dataset runs/datasets/lenta_yolo_tiled/data.yaml \
+    --split train --limit 300 \
+    --out-dir runs/preview_train
+```
+
+Открыть `runs/preview_train/index.html`. Если bbox плывут → повысить
+`--match-threshold` до `0.72` или убрать `--propagate 0`.
+
+### Шаг 3. Обучить
+
+```bash
+just train-yolo1
+
+# Или вручную:
+bash train/train_yolo1.sh runs/datasets/lenta_yolo_tiled/data.yaml
+```
+
+Параметры тренировки Stage 1 (`train/train_yolo1.sh`):
 
 ```text
-<текущая рабочая папка>/models/price_tag_yolo.pt
-<корень репозитория>/models/price_tag_yolo.pt
+model     yolo11n.pt     базовая модель (см. TODO ниже)
+epochs    150
+imgsz     1280
+batch     4
+device    0              GPU
+patience  30
 ```
 
-Надежнее всего явно передавать путь:
+Аугментации (для ценников с горизонтальным текстом): `fliplr=0.0`, умеренный `hsv`, слабые геометрические (`degrees=8`, `perspective=0.0008`).
 
-```json
-{
-  "yolo_weights": "models/price_tag_yolo.pt"
-}
-```
-
-Или через env:
-
-```powershell
-$env:ML_YOLO_WEIGHTS="models/price_tag_yolo.pt"
-uv run ml-service
-```
-
-Веса и экспортированные модели не кладем в git: `.pt`, `.onnx`, `.rknn`, `.engine`
-игнорируются.
-
-## Inference
-
-Пример `POST /predict/path`:
-
-```json
-{
-  "video_path": "packages/ml/src/ml/data/Unlabeled/demo.mp4",
-  "mode": "accurate",
-  "sample_fps": 2.0,
-  "max_frames": 0,
-  "yolo_weights": "models/price_tag_yolo.pt",
-  "enable_ocr": true,
-  "enable_qr": true,
-  "tiled_yolo": true,
-  "rail_roi_enabled": true,
-  "crop_phash_dedup": true,
-  "derive_qr_fields_when_missing": false,
-  "save_crops": false
-}
-```
-
-Результаты сохраняются в:
+Результат:
 
 ```text
-packages/ml/src/ml/runs/<run_id>/
-  *_recognized.csv
-  *_debug.json
+runs/detect/price_tag_yolo/weights/best.pt
 ```
 
-`debug.json` содержит настройки, rail ROI, bbox, качество crop, QR/OCR-статус и
-сводку по трекам.
+### Шаг 4. Сохранить веса
 
-## Режимы
+```bash
+just save-yolo1
+# → models/price_tag_yolo.pt
+```
+
+---
+
+## YOLO Stage 2: внутренние элементы ценника
+
+Stage 2 детектирует sub-regions внутри кропа ценника (barcode strip, QR zone,
+price zones и т.д.). Требует Stage 1 весов и разметки внутренностей.
+
+### Шаг 1. Извлечь кропы ценников из датасета
+
+```bash
+just crop-for-stage2
+
+# Или вручную:
+uv run python scripts/crop_detections.py \
+    --dataset  runs/datasets/lenta_yolo_tiled \
+    --weights  models/price_tag_yolo.pt \
+    --out-subdir crops_for_stage2 \
+    --conf 0.25 --imgsz 1280 --device 0
+```
+
+Результат:
 
 ```text
-fast      быстрый smoke/inference: меньше FPS, OCR по умолчанию отключен
-cpu_safe  безопасный локальный режим без обязательных YOLO-весов
-accurate  целевой режим: YOLO + tiled YOLO + rail ROI + QR + OCR + fusion
-quality   alias accurate
+runs/datasets/lenta_yolo_tiled/crops_for_stage2/
+  train/   *.jpg   (кропы ценников с train split)
+  val/     *.jpg
+  manifest.csv     (filename, split, conf, x1, y1, x2, y2)
 ```
 
-Если весов нет, будут работать QR-seed и color/geometry fallback. Это полезно для
-smoke-теста, но нормальное качество ожидается после обучения YOLO.
+### Шаг 2. Разметить в CVAT
 
-## Что уже добавлено из сильных идей
+Импортировать `crops_for_stage2/train/` в CVAT, разметить классы внутренних
+элементов, экспортировать в формате YOLO.
+
+### Шаг 3. Деdup предсказаний (если использовался inside-псевдолейблер)
+
+```bash
+uv run python scripts/dedupe_predictions.py \
+    --source  runs/inside_pseudo_raw \
+    --out-dir runs/inside_pseudo_dedup \
+    --iou-threshold 0.75 --class-aware
+```
+
+### Шаг 4. Подготовить датасет из CVAT export
+
+```bash
+just prepare-cvat \
+    source=runs/cvat_inside_export \
+    out=runs/datasets/lenta_inside_yolo
+
+# Или вручную (стандартный CVAT YOLO layout):
+uv run python scripts/prepare_cvat_dataset.py \
+    --source path/to/cvat_export \
+    --out-dir runs/datasets/lenta_inside_yolo \
+    --val-ratio 0.2
+```
+
+Для нестандартного layout где картинки лежат отдельно:
+
+```bash
+uv run python scripts/prepare_cvat_dataset.py \
+    --source   path/to/cvat_export \
+    --image-root path/to/images \
+    --out-dir  runs/datasets/lenta_inside_yolo
+```
+
+### Шаг 5. Обучить Stage 2
+
+```bash
+just train-yolo2
+
+# Или вручную:
+bash train/train_yolo2.sh runs/datasets/lenta_inside_yolo/data.yaml
+```
+
+Параметры (`train/train_yolo2.sh`):
 
 ```text
-tiled YOLO inference      ценники крупнее для модели на 4K/широких кадрах
-tiled YOLO dataset        train labels пересчитываются из full-frame bbox в tile bbox
-rail ROI                  поиск горизонтальной полочной рейки и детекция внутри ROI
-multi-scale QR            zxing-cpp / pyzbar / OpenCV, остановка после успешного decode
-PaddleOCR + Tesseract     ensemble OCR с graceful fallback
-crop pHash dedup          не гоняем OCR по одинаковым crop
-field voting              выбираем лучшее значение поля между кадрами/источниками
-validators                отбрасываем шумные цены, barcode, SKU, даты, скидки
-debug tracks              видно, почему строка CSV получилась именно такой
+model     models/price_tag_yolo.pt   стартуем с Stage 1 весов (transfer)
+epochs    200
+imgsz     960
+batch     4
 ```
 
-## Сборка YOLO-датасета
+### Шаг 6. Сохранить веса
 
-Обычный full-frame датасет:
-
-```json
-{
-  "data_dir": "packages/ml/src/ml/data",
-  "output_dir": "packages/ml/src/ml/runs/lenta_yolo_dataset",
-  "val_fraction": 0.2,
-  "seed": 42,
-  "tiled": false
-}
+```bash
+just save-yolo2
+# → models/inside_price_tag_yolo.pt
 ```
 
-Рекомендуемый tiled dataset для 4K/мелких ценников:
+---
 
-```json
-{
-  "data_dir": "packages/ml/src/ml/data",
-  "output_dir": "packages/ml/src/ml/runs/lenta_yolo_tiled_dataset",
-  "val_fraction": 0.2,
-  "seed": 42,
-  "tiled": true,
-  "tile_size": 640,
-  "tile_stride": 512,
-  "min_box_visibility": 0.25,
-  "centered_tiles_per_box": 3,
-  "background_tiles_per_frame": 2,
-  "propagate_frames": 2,
-  "template_match_threshold": 0.68,
-  "template_search_pad": 64,
-  "template_min_std": 14.0,
-  "template_backward_iou": 0.55,
-  "template_motion_tolerance": 35.0,
-  "template_edge_margin": 6,
-  "propagate_val": false,
-  "hash_split": true
-}
-```
-
-На выходе:
+## Justfile — все рецепты
 
 ```text
-images/train
-images/val
-labels/train
-labels/val
-data.yaml
+just dataset-build        Собрать tiled датасет (prop=8)
+just dataset-build-full   То же, но полные кадры без тайлов
+just dataset-preview      HTML-галерея разметки train split
+just train-yolo1          Обучить Stage 1
+just save-yolo1           Скопировать best.pt → models/price_tag_yolo.pt
+just crop-for-stage2      Кропы ценников для разметки Stage 2
+just prepare-cvat         CVAT export → YOLO датасет
+just train-yolo2          Обучить Stage 2
+just save-yolo2           Скопировать best.pt → models/inside_price_tag_yolo.pt
+just yolo1-full           Весь Stage 1 одной командой (build→preview→train)
+just qwen-debug [path]    Прогнать Qwen-VL на картинках для отладки
 ```
 
-Логика tiled dataset: кадр берется по `frame_timestamp` из CSV, режется на сеточные
-тайлы, затем дополнительно создаются `focus`-тайлы вокруг каждого bbox. Bbox
-клипается границами тайла и переводится в YOLO-формат. Тайлы без ценников по
-умолчанию не сохраняются.
+Параметры рецептов переопределяются на месте:
 
-`centered_tiles_per_box` увеличивает supervised-датасет без ручной разметки:
-каждый размеченный ценник дает несколько центрированных тайлов с небольшими
-сдвигами. Если нужно больше стабильности на маленьком датасете, можно поставить
-`tile_stride=320` и `centered_tiles_per_box=5`.
-
-`propagate_frames` автоматически расширяет разметку на соседние кадры через
-template tracking: bbox из CSV переносится на соседний кадр, если OpenCV
-`matchTemplate` дает score не ниже `template_match_threshold`. Это использует
-видео сильнее, но не требует ручной разметки. Для чистой разметки лучше начинать
-со строгого режима: мало соседних кадров, высокий threshold, backward-check и
-чистый validation без propagation.
-
-```json
-{
-  "tiled": true,
-  "tile_size": 640,
-  "tile_stride": 512,
-  "centered_tiles_per_box": 1,
-  "background_tiles_per_frame": 2,
-  "propagate_frames": 2,
-  "template_match_threshold": 0.68,
-  "template_search_pad": 64,
-  "template_min_std": 14.0,
-  "template_backward_iou": 0.55,
-  "template_motion_tolerance": 35.0,
-  "template_edge_margin": 6,
-  "propagate_val": false,
-  "hash_split": true
-}
+```bash
+just dataset-build data=data/custom_data out=runs/my_dataset prop=4
+just train-yolo1 dataset=runs/my_dataset
 ```
 
-Если после просмотра HTML-превью bbox всё равно плывут, повышайте
-`template_match_threshold` до `0.72-0.78` или ставьте `propagate_frames=0`.
+---
 
-## Просмотр YOLO-разметки
-
-Чтобы глазами проверить bbox на изображениях, соберите HTML-галерею:
-
-```powershell
-uv run ml-view-annotations `
-  --dataset F:/lenta_price_vision/packages/ml/src/ml/runs/lenta_yolo_propagated_medium_dataset/data.yaml `
-  --split train `
-  --limit 200 `
-  --out-dir F:/lenta_price_vision/packages/ml/src/ml/runs/annotation_preview_train
-```
-
-Для validation split:
-
-```powershell
-uv run ml-view-annotations `
-  --dataset F:/lenta_price_vision/packages/ml/src/ml/runs/lenta_yolo_propagated_medium_dataset/data.yaml `
-  --split val `
-  --limit 200 `
-  --out-dir F:/lenta_price_vision/packages/ml/src/ml/runs/annotation_preview_val
-```
-
-Открыть файл:
+## Где лежат данные
 
 ```text
-F:/lenta_price_vision/packages/ml/src/ml/runs/annotation_preview_train/index.html
+data/Данные/
+  <sequence_name>/
+    *.mp4   видео (90° CCW rotated, 4K)
+    *.csv   labeled bbox + timestamps
+  Unlabeled/
+    *.mp4   видео без разметки
 ```
 
-## Обучение YOLO
+Видео не кладём в git (`.gitignore`). Пайплайн ищет в каждой подпапке
+первый CSV и подходящее MP4 (по stem или по размеру файла).
 
-Через API `POST /train/yolo`:
+---
 
-```json
-{
-  "data_yaml": "packages/ml/src/ml/runs/lenta_yolo_tiled_dataset/data.yaml",
-  "model": "yolo11n.pt",
-  "epochs": 150,
-  "imgsz": 640,
-  "batch": 16,
-  "device": "0",
-  "project": "F:/lenta_price_vision/packages/ml/src/ml/runs/detect",
-  "name": "price_tag_yolo"
-}
-```
-
-Для CPU вместо GPU:
-
-```json
-{
-  "device": "cpu",
-  "batch": 4
-}
-```
-
-Напрямую через ultralytics CLI:
-
-```powershell
-uv run yolo detect train model=yolo11n.pt data=F:/lenta_price_vision/packages/ml/src/ml/runs/lenta_yolo_tiled_dataset/data.yaml imgsz=640 epochs=120 batch=16 device=0 cache=disk project=F:/lenta_price_vision/packages/ml/src/ml/runs/detect name=price_tag_yolo11n_tiled_640
-```
-
-После обучения лучший вес обычно здесь:
+## Где лежат модели
 
 ```text
-F:/lenta_price_vision/packages/ml/src/ml/runs/detect/price_tag_yolo11n_tiled_640/weights/best.pt
+models/
+  price_tag_yolo.pt        Stage 1: детектор ценников
+  inside_price_tag_yolo.pt Stage 2: внутренние элементы (после обучения)
 ```
 
-Скопировать в стандартное место:
+Веса не кладём в git (`.gitignore`). Путь к модели можно задать через
+env или явно в скриптах.
 
-```powershell
-New-Item -ItemType Directory -Force F:\lenta_price_vision\models
-Copy-Item F:\lenta_price_vision\packages\ml\src\ml\runs\detect\price_tag_yolo11n_tiled_640\weights\best.pt F:\lenta_price_vision\models\price_tag_yolo.pt
-```
+---
 
-## Оценка на public-разметке
-
-`POST /evaluate/public`:
-
-```json
-{
-  "data_dir": "packages/ml/src/ml/data",
-  "mode": "accurate",
-  "sample_fps": 1.0,
-  "max_frames": 0,
-  "yolo_weights": "models/price_tag_yolo.pt",
-  "tiled_yolo": true,
-  "rail_roi_enabled": true
-}
-```
-
-Отчет появится в:
+## Формат YOLO label файлов
 
 ```text
-runs/<run_id>/evaluation_report.json
+class_id cx cy w h       (все значения normalized 0–1 относительно тайла/кадра)
+0 0.5234 0.4500 0.1456 0.3400
 ```
 
-## CSV-схема
+Stage 1: один класс `0: price_tag`.
+Stage 2: несколько классов — зависит от разметки коллеги.
 
-Итоговый CSV всегда пишется в фиксированном порядке:
+---
+
+## CSV-схема выхода (29 полей)
 
 ```text
 filename, product_name, price_default, price_card, price_discount,
@@ -403,27 +369,56 @@ wholesale_level_2_count, wholesale_level_2_price,
 action_price_qr, action_code_qr
 ```
 
-Legacy-колонка public-разметки:
+Соглашение: `нет` = поле точно отсутствует, пусто = не распознано.
+
+---
+
+## TODO для коллеги
+
+Следующие вещи не реализованы или требуют уточнения:
 
 ```text
-wholesale_level_1_coun -> wholesale_level_1_count
-```
+[ ] Stage 1 base model
+    train/train_yolo1.sh использует yolo11n.pt по умолчанию.
+    Прежний скрипт коллеги (yolo1-train.sh) использовал yolo26n.pt.
+    Уточни что брать базой — или задай переменную:
+    YOLO1_BASE_MODEL=yolo26n.pt just train-yolo1
 
-Правила заполнения:
+[ ] Stage 2 классы внутренних элементов
+    train/train_yolo2.sh готов, но нужен датасет.
+    Какие классы детектируем внутри ценника?
+    (barcode_strip, qr_zone, price_card_zone, price_default_zone, ...)
 
-```text
-нет      параметр точно отсутствует
-пусто    параметр есть, но не распознан
-```
+[ ] Stage 2 датасет
+    Есть ли уже готовая разметка inside-элементов?
+    Где она лежит (CVAT export, YOLO labels, другой формат)?
 
-## Практичный порядок работы
+[ ] CVAT export формат
+    scripts/prepare_cvat_dataset.py поддерживает стандартный YOLO export
+    и специальный "image-root" layout.
+    Если у коллеги другой формат экспорта — сообщи, добавим парсер.
 
-```text
-1. Положить public mp4/csv в packages/ml/src/ml/data/<sequence>/
-2. Собрать tiled YOLO dataset через POST /dataset/yolo
-3. Обучить YOLO через POST /train/yolo или uv run yolo ...
-4. Положить best.pt в models/price_tag_yolo.pt
-5. Прогнать POST /evaluate/public
-6. Прогнать POST /predict/path на Unlabeled видео
-7. Смотреть *_recognized.csv и *_debug.json
+[ ] inside псевдолейблер
+    В how_to_yolo.md упоминается scripts/analyze_inside_on_crops_rot90ccw.py
+    (прогнать inside-модель по crops → YOLO labels для CVAT).
+    Не реализовано: нет inside-модели для старта псевдолейблинга.
+    После первой ручной разметки + Stage 2 тренировки — можно добавить.
+
+[ ] Inference pipeline с YOLO детектором
+    main.py сейчас работает только в labeled-data режиме (GT CSV → bbox).
+    Для unlabeled видео нужно подключить Stage 1 детектор вместо GT bbox.
+    Скелет: load_vlm → VideoCapture → YOLO detect → cut_crop → VLM → CSV.
+
+[ ] ByteTrack трекинг для непрерывного видео
+    43_15 и другие датасеты с остановками робота работают без трекинга.
+    Для видео с движением нужен ByteTrack трек + temporal field voting.
+    Есть в sol1/packages/ml/evidence_fusion.py — решение коллеги.
+
+[ ] pHash dedup кропов
+    В ml_readme (старом) упоминался crop_phash_dedup чтобы не гонять OCR
+    по одинаковым кропам. Не перенесено.
+
+[ ] Rail ROI
+    Поиск полочной рейки для ограничения зоны детекции.
+    Есть в sol1/packages/ml/rail_roi.py — решение коллеги.
 ```
