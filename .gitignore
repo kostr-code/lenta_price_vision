@@ -9,7 +9,7 @@ wheels/
 # Virtual environments
 .venv
 
-runs/
+!runs/datasets/price_tag_dataset_1
 
 # Heavy data: videos, raw CSVs, model weights
 data/Данные/
