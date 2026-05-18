@@ -1,0 +1,20 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+runs/
+
+# Heavy data: videos, raw CSVs, model weights
+data/Данные/
+data/Материалы/
+models/
+*.pt
+*.onnx
+*.mp4
