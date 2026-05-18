@@ -1,13 +1,17 @@
 """
-scripts/preview_dataset.py — draw bboxes on dataset images and generate index.html.
+scripts/preview_dataset.py — нарисовать bbox поверх изображений датасета и сгенерировать index.html.
 
-Usage:
+Читает data.yaml, находит изображения нужного split-а, рисует зелёные прямоугольники
+по YOLO-меткам и сохраняет HTML-галерею с inline base64 картинками.
+
+Запуск:
     uv run python scripts/preview_dataset.py \\
         --dataset runs/datasets/lenta_yolo_tiled/data.yaml \\
         --split train --limit 200 --out-dir runs/preview_train
 
-Then open runs/preview_train/index.html in a browser.
+Затем открыть runs/preview_train/index.html в браузере.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -19,12 +23,18 @@ import yaml  # pip/uv: pyyaml
 
 
 def load_dataset(data_yaml: Path) -> tuple[Path, dict]:
+    """Прочитать data.yaml и вернуть (корневая папка датасета, конфиг)."""
     cfg = yaml.safe_load(data_yaml.read_text(encoding="utf-8"))
     root = Path(cfg.get("path", data_yaml.parent)).resolve()
     return root, cfg
 
 
 def draw_boxes(cv2, img_path: Path, lbl_path: Path | None):
+    """Нарисовать YOLO-bbox поверх изображения; вернуть base64-строку JPEG или None.
+
+    YOLO-координаты (cx, cy, bw, bh) нормированы [0,1] — переводим в пиксели
+    перед вызовом cv2.rectangle.
+    """
     img = cv2.imread(str(img_path))
     if img is None:
         return None
@@ -45,9 +55,10 @@ def draw_boxes(cv2, img_path: Path, lbl_path: Path | None):
 
 
 def build_html(items: list[tuple[str, str]]) -> str:
+    """Сгенерировать HTML-галерею: сетка карточек с inline base64-изображениями."""
     cards = "".join(
         f'<div class="card"><img src="data:image/jpeg;base64,{b64}" />'
-        f'<p>{name}</p></div>'
+        f"<p>{name}</p></div>"
         for name, b64 in items
     )
     return (
@@ -63,10 +74,12 @@ def build_html(items: list[tuple[str, str]]) -> str:
 
 def main() -> int:
     p = argparse.ArgumentParser()
-    p.add_argument("--dataset", required=True, help="Path to data.yaml")
+    p.add_argument("--dataset", required=True, help="Путь к data.yaml датасета")
     p.add_argument("--split", default="train", choices=["train", "val"])
-    p.add_argument("--limit", type=int, default=200)
-    p.add_argument("--out-dir", required=True)
+    p.add_argument(
+        "--limit", type=int, default=200, help="Максимальное кол-во картинок в галерее"
+    )
+    p.add_argument("--out-dir", required=True, help="Папка для index.html")
     args = p.parse_args()
 
     try:
@@ -81,7 +94,9 @@ def main() -> int:
         return 1
 
     root, cfg = load_dataset(data_yaml)
-    img_dir = root / cfg.get("train" if args.split == "train" else "val", f"images/{args.split}")
+    img_dir = root / cfg.get(
+        "train" if args.split == "train" else "val", f"images/{args.split}"
+    )
     lbl_dir = Path(str(img_dir).replace("images", "labels"))
 
     out_dir = Path(args.out_dir)

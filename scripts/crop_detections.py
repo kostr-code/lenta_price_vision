@@ -1,20 +1,22 @@
 """
-scripts/crop_detections.py — run YOLO detector over a dataset and save detected crops.
+scripts/crop_detections.py — прогнать YOLO-детектор по датасету и сохранить кропы.
 
-Used after Stage 1 training to extract price-tag crops for Stage 2 pseudo-labeling.
+Используется после обучения Stage 1 для извлечения кропов ценников, которые затем
+размечают в CVAT для обучения Stage 2 (детектор внутренних элементов ценника).
 
-Usage:
+Запуск:
     uv run python scripts/crop_detections.py \\
         --dataset runs/datasets/lenta_yolo_tiled \\
         --weights models/price_tag_yolo.pt \\
         --out-subdir crops_for_stage2 \\
         --conf 0.25 --imgsz 1280 --device 0
 
-Output:
+Выход:
     <dataset>/crops_for_stage2/train/<stem>_crop<N>.jpg
     <dataset>/crops_for_stage2/val/<stem>_crop<N>.jpg
     <dataset>/crops_for_stage2/manifest.csv
 """
+
 from __future__ import annotations
 
 import argparse
@@ -24,7 +26,13 @@ import sys
 from pathlib import Path
 
 
-def run_detector(weights: Path, img_dir: Path, out_dir: Path, conf: float, imgsz: int, device: str):
+def run_detector(
+    weights: Path, img_dir: Path, out_dir: Path, conf: float, imgsz: int, device: str
+):
+    """Прогнать YOLO по всем *.jpg в img_dir, сохранить кропы в out_dir.
+
+    Возвращает список записей для manifest.csv: filename, source, conf, x1, y1, x2, y2.
+    """
     try:
         from ultralytics import YOLO
     except ImportError:
@@ -39,7 +47,9 @@ def run_detector(weights: Path, img_dir: Path, out_dir: Path, conf: float, imgsz
     records = []
 
     for img_path in sorted(img_dir.glob("*.jpg")):
-        results = model.predict(str(img_path), conf=conf, imgsz=imgsz, device=device, verbose=False)
+        results = model.predict(
+            str(img_path), conf=conf, imgsz=imgsz, device=device, verbose=False
+        )
         img = cv2.imread(str(img_path))
         if img is None:
             continue
@@ -57,26 +67,43 @@ def run_detector(weights: Path, img_dir: Path, out_dir: Path, conf: float, imgsz
                 out_name = f"{stem}_crop{crop_idx:02d}.jpg"
                 out_path = out_dir / out_name
                 cv2.imwrite(str(out_path), crop)
-                records.append({
-                    "filename": out_name,
-                    "source": img_path.name,
-                    "conf": f"{float(box.conf[0]):.4f}",
-                    "x1": x1, "y1": y1, "x2": x2, "y2": y2,
-                })
+                records.append(
+                    {
+                        "filename": out_name,
+                        "source": img_path.name,
+                        "conf": f"{float(box.conf[0]):.4f}",
+                        "x1": x1,
+                        "y1": y1,
+                        "x2": x2,
+                        "y2": y2,
+                    }
+                )
 
     return records
 
 
 def main() -> int:
     p = argparse.ArgumentParser()
-    p.add_argument("--dataset", required=True, help="Dataset root (contains images/train, images/val)")
-    p.add_argument("--weights", required=True, help="Path to trained YOLO .pt weights")
-    p.add_argument("--out-subdir", default="crops_for_stage2")
+    p.add_argument(
+        "--dataset",
+        required=True,
+        help="Корень датасета (содержит images/train, images/val)",
+    )
+    p.add_argument("--weights", required=True, help="Путь к обученным весам YOLO .pt")
+    p.add_argument(
+        "--out-subdir",
+        default="crops_for_stage2",
+        help="Подпапка внутри датасета для кропов",
+    )
     p.add_argument("--splits", nargs="+", default=["train", "val"])
-    p.add_argument("--conf", type=float, default=0.25)
+    p.add_argument(
+        "--conf", type=float, default=0.25, help="Порог уверенности детектора"
+    )
     p.add_argument("--imgsz", type=int, default=1280)
     p.add_argument("--device", default="0")
-    p.add_argument("--clear-output", action="store_true", help="Delete out-subdir before writing")
+    p.add_argument(
+        "--clear-output", action="store_true", help="Очистить out-subdir перед записью"
+    )
     args = p.parse_args()
 
     dataset = Path(args.dataset)
@@ -97,17 +124,31 @@ def main() -> int:
             continue
         out_dir = out_root / split
         print(f"[crops] Processing {img_dir} → {out_dir}")
-        records = run_detector(weights, img_dir, out_dir, args.conf, args.imgsz, args.device)
+        records = run_detector(
+            weights, img_dir, out_dir, args.conf, args.imgsz, args.device
+        )
         for r in records:
             r["split"] = split
         all_records.extend(records)
         print(f"  saved {len(records)} crops")
 
-    # Write manifest
+    # записываем манифест со всеми кропами из обоих split-ов
     manifest = out_root / "manifest.csv"
     if all_records:
         with manifest.open("w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=["filename", "split", "source", "conf", "x1", "y1", "x2", "y2"])
+            writer = csv.DictWriter(
+                f,
+                fieldnames=[
+                    "filename",
+                    "split",
+                    "source",
+                    "conf",
+                    "x1",
+                    "y1",
+                    "x2",
+                    "y2",
+                ],
+            )
             writer.writeheader()
             writer.writerows(all_records)
         print(f"[crops] manifest → {manifest}  ({len(all_records)} total)")

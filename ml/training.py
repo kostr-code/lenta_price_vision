@@ -1,10 +1,16 @@
 """
-ml/training.py — YOLO dataset builder for Lenta price-tag detection.
+ml/training.py — сборка YOLO-датасета для детекции ценников Ленты.
 
-Builds a YOLO-format dataset (images/ + labels/ + data.yaml) from
-labeled video+CSV pairs.  Supports full-frame and tiled (640px) modes.
+Из пар (видео + CSV с разметкой) собирает датасет в формате YOLO:
+папки images/, labels/ и файл data.yaml.
 
-Usage:
+Два режима:
+  - full-frame: каждый кадр сохраняется целиком, bbox переводятся в YOLO-формат
+  - tiled: кадр режется на перекрывающиеся тайлы 640px, bbox клипается
+    по границам тайла — используется для 4K видео, где ценники мелкие
+    относительно всего кадра
+
+Запуск:
     uv run python -m ml.training \\
         --data-dir data/Данные \\
         --out-dir  runs/datasets/lenta_yolo_tiled \\
@@ -22,7 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-# ── Geometry ─────────────────────────────────────────────────────────────────
+# ── Геометрия ────────────────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
 class BBox:
@@ -52,7 +58,7 @@ def bbox_iou(a: BBox, b: BBox) -> float:
     return inter / union if union > 0 else 0.0
 
 
-# ── Tiling ────────────────────────────────────────────────────────────────────
+# ── Тайлинг ──────────────────────────────────────────────────────────────────
 
 def iter_tiles(
     width: int,
@@ -60,11 +66,17 @@ def iter_tiles(
     tile_size: int = 640,
     stride: int = 512,
 ) -> list[tuple[int, int, int, int]]:
-    """Yield (x1, y1, x2, y2) tiles covering width×height."""
+    """Вернуть список тайлов (x1, y1, x2, y2) покрывающих кадр width×height.
+
+    Тайлы перекрываются: шаг stride < tile_size, значит перекрытие = tile_size - stride.
+    Последний тайл по каждой оси гарантированно упирается в границу кадра —
+    это нужно чтобы не обрезать объекты у правого/нижнего края.
+    """
     def starts(length: int) -> list[int]:
         if length <= tile_size:
             return [0]
         pts = list(range(0, length - tile_size + 1, stride))
+        # гарантируем что последний тайл достигает конца оси
         if pts[-1] != length - tile_size:
             pts.append(length - tile_size)
         return pts
@@ -76,17 +88,21 @@ def iter_tiles(
     ]
 
 
-# ── Data discovery ────────────────────────────────────────────────────────────
+# ── Поиск данных ─────────────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
 class LabeledSequence:
+    """Одна размеченная последовательность: видео + CSV с bbox."""
     name: str
     video_path: Path
     csv_path: Path
 
 
 def discover_sequences(data_dir: Path) -> list[LabeledSequence]:
-    """Find all (video, csv) pairs inside data_dir subdirectories."""
+    """Найти все пары (видео, CSV) в подпапках data_dir.
+
+    Берём первый CSV в папке; видео ищем с тем же stem, иначе — самый большой файл.
+    """
     seqs = []
     for d in sorted(p for p in data_dir.iterdir() if p.is_dir()):
         csvs = sorted(d.glob("*.csv"))
@@ -101,20 +117,27 @@ def discover_sequences(data_dir: Path) -> list[LabeledSequence]:
 
 
 def read_csv(path: Path) -> list[dict[str, str]]:
+    """Прочитать CSV с разметкой, убрать пробелы из ключей и значений."""
     with path.open(newline="", encoding="utf-8-sig") as f:
         return [{k.strip(): str(v).strip() for k, v in row.items()} for row in csv.DictReader(f)]
 
 
 def parse_float(value: object) -> float:
+    """Перевести строку в float, принимая запятую как разделитель (формат разметки)."""
     try:
         return float(str(value or "").strip().replace(",", "."))
     except ValueError:
         return 0.0
 
 
-# ── Coordinate helpers ────────────────────────────────────────────────────────
+# ── Работа с координатами ────────────────────────────────────────────────────
 
 def row_to_bbox(row: dict[str, str], frame_w: int, frame_h: int) -> BBox | None:
+    """Прочитать bbox из строки CSV и привести к пиксельным координатам кадра.
+
+    Координаты клипаются по границам кадра и сортируются (защита от перепутанных min/max).
+    Bbox < 3px по любой стороне считается невалидным и возвращает None.
+    """
     x1, y1 = parse_float(row.get("x_min")), parse_float(row.get("y_min"))
     x2, y2 = parse_float(row.get("x_max")), parse_float(row.get("y_max"))
     x1, x2 = sorted([max(0.0, min(float(frame_w), x1)), max(0.0, min(float(frame_w), x2))])
@@ -124,6 +147,7 @@ def row_to_bbox(row: dict[str, str], frame_w: int, frame_h: int) -> BBox | None:
 
 
 def bbox_to_yolo(bbox: BBox, w: int, h: int) -> tuple[float, float, float, float] | None:
+    """Перевести пиксельный bbox в YOLO-формат: (cx, cy, bw, bh) нормированные [0, 1]."""
     if bbox.width < 3 or bbox.height < 3:
         return None
     return (
@@ -135,6 +159,7 @@ def bbox_to_yolo(bbox: BBox, w: int, h: int) -> tuple[float, float, float, float
 
 
 def clip_to_tile(bbox: BBox, tile: tuple[int, int, int, int]) -> BBox | None:
+    """Обрезать bbox по границам тайла. Возвращает None если результат меньше 3px."""
     tx1, ty1, tx2, ty2 = tile
     cx1, cy1 = max(bbox.x_min, tx1), max(bbox.y_min, ty1)
     cx2, cy2 = min(bbox.x_max, tx2), min(bbox.y_max, ty2)
@@ -143,6 +168,11 @@ def clip_to_tile(bbox: BBox, tile: tuple[int, int, int, int]) -> BBox | None:
 
 
 def dedup_labels(labels: list[str], iou_thr: float = 0.92) -> list[str]:
+    """Убрать дублирующиеся YOLO-метки с IoU > iou_thr (keep-first).
+
+    Порог 0.92 убирает только практически идентичные bbox — например,
+    когда один и тот же ценник попал в два соседних тайла с большим перекрытием.
+    """
     kept, boxes = [], []
     for line in labels:
         parts = line.split()
@@ -158,12 +188,18 @@ def dedup_labels(labels: list[str], iou_thr: float = 0.92) -> list[str]:
 
 
 def safe_name(value: str) -> str:
+    """Очистить строку для использования в имени файла."""
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("_") or "frame"
 
 
-# ── Frame writing ─────────────────────────────────────────────────────────────
+# ── Запись кадров в датасет ───────────────────────────────────────────────────
 
 def write_full_frame(cv2, frame, rows, img_path: Path, lbl_path: Path) -> tuple[int, int]:
+    """Сохранить полный кадр и YOLO-метки для него.
+
+    Возвращает (кол-во записанных изображений, кол-во записанных меток).
+    Если валидных bbox нет — ничего не пишем и возвращаем (0, 0).
+    """
     h, w = frame.shape[:2]
     labels = [
         "0 " + " ".join(f"{v:.6f}" for v in yolo)
@@ -183,6 +219,12 @@ def write_tiled_frame(
     img_dir: Path, lbl_dir: Path, stem: str,
     tile_size: int, tile_stride: int, min_visibility: float,
 ) -> tuple[int, int]:
+    """Нарезать кадр на тайлы и сохранить каждый тайл с соответствующими метками.
+
+    Тайл сохраняется только если в нём есть хотя бы один bbox с видимостью
+    >= min_visibility (доля площади оригинального bbox, попавшая в тайл).
+    Координаты bbox переводятся в локальную систему координат тайла перед записью.
+    """
     h, w = frame.shape[:2]
     bboxes = [b for row in rows if (b := row_to_bbox(row, w, h))]
     if not bboxes:
@@ -197,8 +239,10 @@ def write_tiled_frame(
             clipped = clip_to_tile(src, tile)
             if clipped is None:
                 continue
+            # пропускаем bbox у которых в тайл попало меньше min_visibility площади
             if clipped.area / max(src.area, 1.0) < min_visibility:
                 continue
+            # перевести в локальные координаты тайла
             local = BBox(
                 clipped.x_min - tx1, clipped.y_min - ty1,
                 clipped.x_max - tx1, clipped.y_max - ty1,
@@ -217,7 +261,7 @@ def write_tiled_frame(
     return written_imgs, written_lbls
 
 
-# ── Main builder ──────────────────────────────────────────────────────────────
+# ── Основной builder ─────────────────────────────────────────────────────────
 
 def build_yolo_dataset(
     data_dir: Path,
@@ -229,6 +273,10 @@ def build_yolo_dataset(
     tile_stride: int = 512,
     min_box_visibility: float = 0.25,
 ) -> dict[str, object]:
+    """Собрать YOLO-датасет из всех размеченных последовательностей в data_dir.
+
+    Возвращает словарь с путём к data.yaml и счётчиками изображений/меток.
+    """
     try:
         import cv2
     except ImportError:
@@ -240,7 +288,8 @@ def build_yolo_dataset(
     for d in [*img_dirs.values(), *lbl_dirs.values()]:
         d.mkdir(parents=True, exist_ok=True)
 
-    # Collect all (sequence, timestamp, rows) triples
+    # собираем все тройки (последовательность, timestamp, строки разметки)
+    # несколько ценников в одном timestamp объединяются в один кадр
     frames = []
     for seq in discover_sequences(data_dir):
         by_ts: dict[int, list[dict]] = {}
@@ -250,7 +299,9 @@ def build_yolo_dataset(
         for ts, rows in by_ts.items():
             frames.append((seq, ts, rows))
 
+    # перемешиваем с фиксированным seed для воспроизводимого split'а
     random.Random(seed).shuffle(frames)
+    # первые n_val элементов после перемешивания идут в val
     n_val = max(1, int(len(frames) * val_fraction)) if len(frames) > 1 else 0
     val_set = set(range(n_val))
 
@@ -307,7 +358,7 @@ def build_yolo_dataset(
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def main() -> int:
-    p = argparse.ArgumentParser(description="Build YOLO dataset from labeled video/CSV pairs")
+    p = argparse.ArgumentParser(description="Собрать YOLO-датасет из размеченных пар видео/CSV")
     p.add_argument("--data-dir", required=True, help="Directory with subdirs containing .mp4 + .csv")
     p.add_argument("--out-dir", required=True, help="Output dataset directory")
     p.add_argument("--tiled", action="store_true", help="Split frames into 640px tiles")

@@ -1,27 +1,28 @@
 """
-scripts/build_dataset.py — dataset builder CLI with template propagation.
+scripts/build_dataset.py — CLI сборки датасета с template propagation.
 
-Wraps ml.training.build_yolo_dataset and optionally expands labels to
-neighboring frames via cv2.matchTemplate (--propagate N).
+Обёртка над ml.training.build_yolo_dataset. Дополнительно расширяет датасет:
+для каждого размеченного кадра ищет те же bbox в ±N соседних кадрах через
+cv2.matchTemplate и добавляет найденные кадры в train-split.
 
-Usage:
+Запуск:
     uv run python scripts/build_dataset.py \\
         --data-dir data/Данные \\
         --out-dir  runs/datasets/lenta_yolo_tiled \\
         --tiled --propagate 8 --val-ratio 0.2
 
 Template propagation:
-    For each labeled frame, tries to track each bbox into ±N adjacent frames
-    using template matching.  Adds matched frames as extra training images.
-    If labels "float" (bbox drift), raise --match-threshold (0.42 → 0.72).
+    Позволяет умножить тренировочные данные без ручной разметки.
+    Если bbox после проверки "плывут" — повысить --match-threshold (0.42 → 0.72).
 """
+
 from __future__ import annotations
 
 import argparse
 import sys
 from pathlib import Path
 
-# Add sol_main/ to path so `ml` package resolves
+# добавляем корень sol_main/ в sys.path чтобы пакет ml был виден при запуске из scripts/
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ml.training import (
@@ -52,10 +53,14 @@ def propagate_frame(
     threshold: float,
     search_pad: int,
 ) -> list[tuple[object, list[BBox]]]:
-    """
-    Try to find each bbox in ±n_frames adjacent frames via template matching.
+    """Найти каждый bbox из base_frame в ±n_frames соседних кадрах через template matching.
 
-    Returns list of (frame_image, [matched_bboxes]) for frames with ≥1 match.
+    Для каждого кадра-соседа:
+      1. Вырезаем шаблон (grayscale) из base_frame по bbox
+      2. В соседнем кадре ищем шаблон в области bbox ± search_pad пикселей
+      3. Если cv2.TM_CCOEFF_NORMED score >= threshold — сохраняем найденный bbox
+
+    Возвращает список (кадр, список найденных bbox) для кадров где нашли хотя бы 1 bbox.
     """
     results = []
     step_ms = 1000.0 / max(fps, 1.0)
@@ -78,12 +83,17 @@ def propagate_frame(
         matched = []
 
         for bbox in base_bboxes:
-            x1, y1, x2, y2 = int(bbox.x_min), int(bbox.y_min), int(bbox.x_max), int(bbox.y_max)
+            x1, y1, x2, y2 = (
+                int(bbox.x_min),
+                int(bbox.y_min),
+                int(bbox.x_max),
+                int(bbox.y_max),
+            )
             tmpl = gray_base[y1:y2, x1:x2]
             if tmpl.size == 0:
                 continue
 
-            # Search region = bbox ± search_pad
+            # область поиска = bbox ± search_pad, ограниченная размерами кадра
             sx1 = max(0, x1 - search_pad)
             sy1 = max(0, y1 - search_pad)
             sx2 = min(fw, x2 + search_pad)
@@ -93,14 +103,18 @@ def propagate_frame(
                 continue
 
             import numpy as np
+
             res = cv2.matchTemplate(region, tmpl, cv2.TM_CCOEFF_NORMED)
             _, score, _, loc = cv2.minMaxLoc(res)
             if score < threshold:
                 continue
 
-            # Translate match location back to full-frame coords
+            # loc — координаты левого верхнего угла совпадения внутри region;
+            # переводим обратно в координаты полного кадра
             mx, my = loc[0] + sx1, loc[1] + sy1
-            matched.append(BBox(float(mx), float(my), float(mx + (x2 - x1)), float(my + (y2 - y1))))
+            matched.append(
+                BBox(float(mx), float(my), float(mx + (x2 - x1)), float(my + (y2 - y1)))
+            )
 
         if matched:
             results.append((frame.copy(), matched))
@@ -122,8 +136,13 @@ def build_with_propagation(
     match_threshold: float,
     search_pad: int,
 ) -> None:
-    """Build dataset then optionally expand via template propagation."""
-    # Phase 1: base dataset (labeled frames only)
+    """Собрать датасет и опционально расширить его через template propagation.
+
+    Фаза 1: базовый датасет из размеченных кадров (только GT timestamp'ы из CSV).
+    Фаза 2: для каждого размеченного кадра ищем те же bbox в ±n_propagate соседних
+            кадрах; найденные кадры добавляются только в train (val не трогаем).
+    """
+    # фаза 1: базовый датасет — только размеченные кадры
     result = build_yolo_dataset(
         data_dir=data_dir,
         output_dir=output_dir,
@@ -134,17 +153,19 @@ def build_with_propagation(
         tile_stride=tile_stride,
         min_box_visibility=min_visibility,
     )
-    print(f"\n[base] train={result['train_images']}  val={result['val_images']}"
-          f"  labels={result['total_labels']}")
+    print(
+        f"\n[base] train={result['train_images']}  val={result['val_images']}"
+        f"  labels={result['total_labels']}"
+    )
 
     if n_propagate == 0:
         return
 
-    # Phase 2: template propagation into neighboring frames (train split only)
+    # фаза 2: template propagation в соседние кадры (только train split)
     try:
         import cv2
     except ImportError:
-        print("[warn] opencv not available, skipping propagation")
+        print("[warn] opencv не найден, propagation пропущен")
         return
 
     img_dir = output_dir / "images" / "train"
@@ -162,7 +183,7 @@ def build_with_propagation(
             by_ts.setdefault(ts, []).append(row)
 
         for ts_ms, rows in by_ts.items():
-            # Load the base frame
+            # загружаем базовый (размеченный) кадр
             cap2 = cv2.VideoCapture(str(seq.video_path))
             cap2.set(cv2.CAP_PROP_POS_MSEC, ts_ms)
             ok, base_frame = cap2.read()
@@ -176,54 +197,89 @@ def build_with_propagation(
                 continue
 
             prop_frames = propagate_frame(
-                cv2, base_frame, bboxes, seq.video_path, ts_ms, fps,
-                n_propagate, match_threshold, search_pad,
+                cv2,
+                base_frame,
+                bboxes,
+                seq.video_path,
+                ts_ms,
+                fps,
+                n_propagate,
+                match_threshold,
+                search_pad,
             )
 
             for offset_idx, (frame, matched_bboxes) in enumerate(prop_frames):
                 stem = safe_name(f"{seq.name}_{ts_ms:08d}_prop{offset_idx:02d}")
 
-                # Build fake rows from matched bboxes for reuse of write_* functions
-                fh2, fw2 = frame.shape[:2]
+                # конвертируем BBox обратно в dict-строки чтобы переиспользовать write_*
                 fake_rows = [
-                    {"x_min": str(b.x_min), "y_min": str(b.y_min),
-                     "x_max": str(b.x_max), "y_max": str(b.y_max)}
+                    {
+                        "x_min": str(b.x_min),
+                        "y_min": str(b.y_min),
+                        "x_max": str(b.x_max),
+                        "y_max": str(b.y_max),
+                    }
                     for b in matched_bboxes
                 ]
 
                 if tiled:
                     ni, nl = write_tiled_frame(
-                        cv2, frame, fake_rows, img_dir, lbl_dir, stem,
-                        tile_size, tile_stride, min_visibility,
+                        cv2,
+                        frame,
+                        fake_rows,
+                        img_dir,
+                        lbl_dir,
+                        stem,
+                        tile_size,
+                        tile_stride,
+                        min_visibility,
                     )
                 else:
                     ni, nl = write_full_frame(
-                        cv2, frame, fake_rows,
+                        cv2,
+                        frame,
+                        fake_rows,
                         img_dir / f"{stem}.jpg",
                         lbl_dir / f"{stem}.txt",
                     )
                 prop_imgs += ni
                 prop_lbls += nl
 
-    print(f"[propagation] added train: {prop_imgs} images, {prop_lbls} labels")
+    print(
+        f"[propagation] добавлено в train: {prop_imgs} изображений, {prop_lbls} меток"
+    )
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(description="Build YOLO dataset with optional template propagation")
-    p.add_argument("--data-dir", required=True, help="Dir with subdirs of .mp4 + .csv")
-    p.add_argument("--out-dir", required=True, help="Output dataset directory")
-    p.add_argument("--tiled", action="store_true", help="Use 640px tiled mode")
+    p = argparse.ArgumentParser(
+        description="Собрать YOLO-датасет с опциональным template propagation"
+    )
+    p.add_argument("--data-dir", required=True, help="Папка с подпапками .mp4 + .csv")
+    p.add_argument("--out-dir", required=True, help="Куда писать датасет")
+    p.add_argument("--tiled", action="store_true", help="Тайловый режим 640px")
     p.add_argument("--tile-size", type=int, default=640)
     p.add_argument("--tile-stride", type=int, default=512)
     p.add_argument("--min-visibility", type=float, default=0.25)
     p.add_argument("--val-ratio", type=float, default=0.2)
     p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--propagate", type=int, default=0,
-                   help="Expand labels into ±N adjacent frames via template matching (0=off)")
-    p.add_argument("--match-threshold", type=float, default=0.42,
-                   help="cv2.matchTemplate score threshold (0.42 loose, 0.72 strict)")
-    p.add_argument("--search-pad", type=int, default=80,
-                   help="Pixel search radius around bbox for template match")
+    p.add_argument(
+        "--propagate",
+        type=int,
+        default=0,
+        help="Расширить разметку на ±N соседних кадров через template matching (0=выкл)",
+    )
+    p.add_argument(
+        "--match-threshold",
+        type=float,
+        default=0.42,
+        help="Порог cv2.matchTemplate: 0.42 лояльный, 0.72 строгий (если bbox плывут)",
+    )
+    p.add_argument(
+        "--search-pad",
+        type=int,
+        default=80,
+        help="Радиус поиска в пикселях вокруг bbox при template matching",
+    )
     args = p.parse_args()
 
     data_dir = Path(args.data_dir)
@@ -231,8 +287,10 @@ def main() -> int:
         print(f"Error: --data-dir not found: {data_dir}")
         return 1
 
-    print(f"[build] data={data_dir}  out={args.out_dir}"
-          f"  tiled={args.tiled}  propagate={args.propagate}")
+    print(
+        f"[build] data={data_dir}  out={args.out_dir}"
+        f"  tiled={args.tiled}  propagate={args.propagate}"
+    )
 
     build_with_propagation(
         data_dir=data_dir,

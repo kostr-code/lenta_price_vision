@@ -1,26 +1,27 @@
 """
-scripts/prepare_cvat_dataset.py — CVAT YOLO export → clean YOLO dataset.
+scripts/prepare_cvat_dataset.py — из CVAT YOLO export сделать чистый YOLO датасет.
 
-Handles the standard CVAT YOLO export layout:
-    obj_train_data/   (or obj.data, obj.names)
+Поддерживает стандартный лейаут CVAT YOLO export:
+    obj_train_data/   (или obj.data, obj.names)
     labels/
     train.txt
 
-Usage:
+Запуск:
     uv run python scripts/prepare_cvat_dataset.py \\
         --source path/to/cvat_export \\
         --out-dir runs/datasets/lenta_inside_yolo \\
         --val-ratio 0.2 --seed 42
 
-For the special "60_inside_data" layout where images live elsewhere:
+Для нестандартного лейаута где картинки лежат отдельно (--image-root):
     uv run python scripts/prepare_cvat_dataset.py \\
         --source path/to/cvat_export \\
         --image-root path/to/images \\
         --out-dir runs/datasets/lenta_inside_yolo
 
-Output:
-    data.yaml with names read from obj.names (or classes.txt)
+Выход:
+    data.yaml с именами классов из obj.names (или classes.txt)
 """
+
 from __future__ import annotations
 
 import argparse
@@ -34,16 +35,27 @@ def read_class_names(source: Path) -> list[str]:
     for candidate in ["obj.names", "classes.txt", "labels.txt"]:
         f = source / candidate
         if f.exists():
-            return [l.strip() for l in f.read_text(encoding="utf-8").splitlines() if l.strip()]
+            return [
+                l.strip()
+                for l in f.read_text(encoding="utf-8").splitlines()
+                if l.strip()
+            ]
     return ["price_tag_element"]  # fallback
 
 
-def collect_image_label_pairs(source: Path, image_root: Path | None) -> list[tuple[Path, Path | None]]:
-    """Find all (image, label) pairs from CVAT export layout."""
+def collect_image_label_pairs(
+    source: Path, image_root: Path | None
+) -> list[tuple[Path, Path | None]]:
+    """Найти все пары (изображение, метка) из CVAT export.
+
+    Стандартный лейаут CVAT: картинки в obj_train_data/ (или obj.data/, images/),
+    метки рядом с картинками в .txt файлах. Если image_root указан — ищем метки
+    в source/labels/, картинки — в image_root/.
+    """
     pairs = []
     img_extensions = {".jpg", ".jpeg", ".png"}
 
-    # Standard CVAT: images under obj_train_data/ or obj.data/
+    # стандартный CVAT: картинки в obj_train_data/ или obj.data/
     for img_dir_name in ["obj_train_data", "obj.data", "images"]:
         img_dir = source / img_dir_name
         if img_dir.exists():
@@ -53,7 +65,7 @@ def collect_image_label_pairs(source: Path, image_root: Path | None) -> list[tup
                     pairs.append((img, lbl if lbl.exists() else None))
             break
 
-    # Special case: images from external image_root, labels inside source
+    # нестандартный лейаут: картинки лежат в отдельной папке (image_root)
     if not pairs and image_root:
         lbl_dir = source / "labels"
         if not lbl_dir.exists():
@@ -88,10 +100,14 @@ def write_dataset(
         split = "val" if idx in val_set else "train"
         shutil.copy2(img_path, out_dir / "images" / split / img_path.name)
         if lbl_path and lbl_path.exists():
-            shutil.copy2(lbl_path, out_dir / "labels" / split / img_path.with_suffix(".txt").name)
+            shutil.copy2(
+                lbl_path, out_dir / "labels" / split / img_path.with_suffix(".txt").name
+            )
         else:
-            # Empty label file (background sample)
-            (out_dir / "labels" / split / img_path.with_suffix(".txt").name).write_text("")
+            # пустой label-файл = фоновый сэмпл без разметки
+            (out_dir / "labels" / split / img_path.with_suffix(".txt").name).write_text(
+                ""
+            )
 
     names_yaml = "\n".join(f"  {i}: {n}" for i, n in enumerate(names))
     (out_dir / "data.yaml").write_text(
@@ -105,12 +121,16 @@ def write_dataset(
 
 def main() -> int:
     p = argparse.ArgumentParser()
-    p.add_argument("--source", required=True, help="CVAT YOLO export directory")
-    p.add_argument("--image-root", help="External image root (for 60_inside_data layout)")
-    p.add_argument("--out-dir", required=True)
+    p.add_argument("--source", required=True, help="Папка с CVAT YOLO export")
+    p.add_argument(
+        "--image-root", help="Внешняя папка с картинками (для нестандартного лейаута)"
+    )
+    p.add_argument("--out-dir", required=True, help="Куда писать готовый YOLO датасет")
     p.add_argument("--val-ratio", type=float, default=0.2)
     p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--clear-output", action="store_true")
+    p.add_argument(
+        "--clear-output", action="store_true", help="Очистить out-dir перед записью"
+    )
     args = p.parse_args()
 
     source = Path(args.source)
