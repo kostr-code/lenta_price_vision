@@ -7,19 +7,14 @@
 # Defaults to runs/datasets/lenta_yolo_tiled/data.yaml if not specified.
 # Override base model via: YOLO1_BASE_MODEL=yolo11n.pt bash train/train_yolo1.sh
 #
-# TODO(коллега): уточнить базовую модель:
-#   yolo1-train.sh коллеги → yolo26n.pt
-#   how_to_yolo.md         → yolo11n.pt
-#   Default здесь          → yolo11n.pt (менее тяжёлая, хорошо стартует)
 
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-DATA_YAML="${1:-$REPO/runs/datasets/lenta_yolo_tiled/data.yaml}"
+DATA_YAML="${1:-$REPO/runs/datasets/price_tag_dataset_1/data.yaml}"
 RUNS_DIR="$REPO/runs/detect"
 
-# TODO(коллега): поменяй если нужна другая модель
-MODEL="${YOLO1_BASE_MODEL:-yolo11n.pt}"
+MODEL="${YOLO1_BASE_MODEL:-yolo26n.pt}"
 
 if [[ ! -f "$DATA_YAML" ]]; then
     echo "Error: data.yaml not found: $DATA_YAML"
