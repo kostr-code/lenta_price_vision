@@ -1,14 +1,38 @@
 """
 pipeline/qr.py — QR and linear barcode decoding utilities.
+
+Both decode_qr() and decode_barcode_linear() accept an optional
+``enhance_steps`` list (functions from pipeline.sr) applied before the
+decode attempt. The raw image is always tried first; enhanced version is
+tried additionally when steps are provided.
+
+WeChat (with built-in SRQI super-resolution) is supported via the
+``wechat`` parameter — pass the result of load_wechat() once at startup.
+
+Usage:
+  from pipeline.qr import load_wechat, decode_qr, decode_barcode_linear
+  from pipeline.sr import upscale_lanczos_x2, enhance_clahe
+
+  wechat = load_wechat()
+
+  # QR in top-right corner — WeChat handles SRQI internally
+  texts = decode_qr(cut_qr_subcrop(crop), wechat=wechat)
+
+  # Barcode strip — try with CLAHE contrast boost
+  codes = decode_barcode_linear(barcode_strip, enhance_steps=[enhance_clahe])
 """
 from __future__ import annotations
 
 import pathlib
 import urllib.request
+from typing import TYPE_CHECKING
 from urllib.parse import parse_qs
 
 import cv2
 import numpy as np
+
+if TYPE_CHECKING:
+    from pipeline.sr import EnhanceFn
 
 try:
     import zxingcpp
@@ -77,16 +101,13 @@ def load_wechat():
     return det
 
 
-def decode_qr(img_bgr: np.ndarray, wechat=None) -> list[str]:
-    """
-    Decode QR codes using all available decoders.
-
-    Returns unique decoded strings (sorted).
-    wechat: WeChatQRCode instance, or None to skip.
-    """
-    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
-    found: set[str] = set()
-
+def _try_decode_one(
+    gray: np.ndarray,
+    img_bgr: np.ndarray,
+    wechat,
+    found: set[str],
+) -> None:
+    """Run all available decoders on a single image version, adding to found."""
     if _HAS_PYZBAR:
         for r in _pyzbar_decode(gray):
             if r.data:
@@ -101,28 +122,45 @@ def decode_qr(img_bgr: np.ndarray, wechat=None) -> list[str]:
             if d:
                 found.add(d)
 
-    # cheap ×2 resize sometimes unblocks decoders
-    gray2 = cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_LANCZOS4)
-    if _HAS_PYZBAR:
-        for r in _pyzbar_decode(gray2):
-            if r.data:
-                found.add(r.data.decode())
-    if _HAS_ZXING:
-        for r in zxingcpp.read_barcodes(gray2):
-            if r.text:
-                found.add(r.text)
+
+def decode_qr(
+    img_bgr: np.ndarray,
+    wechat=None,
+    enhance_steps: "list[EnhanceFn]" = (),
+) -> list[str]:
+    """
+    Decode QR codes using all available decoders.
+
+    Tries raw image first; if ``enhance_steps`` given, applies them and tries again.
+    WeChat (passed as ``wechat``) uses its built-in SRQI — no external upscaling needed.
+
+    Returns unique decoded strings (sorted).
+    """
+    found: set[str] = set()
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    _try_decode_one(gray, img_bgr, wechat, found)
+
+    if enhance_steps and not found:
+        from pipeline.sr import apply_enhance_steps
+        enhanced = apply_enhance_steps(img_bgr, list(enhance_steps))
+        gray_enh = cv2.cvtColor(enhanced, cv2.COLOR_BGR2GRAY)
+        _try_decode_one(gray_enh, enhanced, wechat, found)
 
     return sorted(found)
 
 
-def decode_barcode_linear(img_bgr: np.ndarray) -> list[str]:
+def decode_barcode_linear(
+    img_bgr: np.ndarray,
+    enhance_steps: "list[EnhanceFn]" = (),
+) -> list[str]:
     """
-    Decode only linear barcodes (EAN-13 etc.) without WeChat.
+    Decode only linear barcodes (EAN-13 etc.) — no WeChat, no QR.
 
     Faster than decode_qr for bottom-strip barcode regions.
+    If ``enhance_steps`` given, applies them and retries on failure.
     """
-    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     found: set[str] = set()
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     if _HAS_PYZBAR:
         for r in _pyzbar_decode(gray):
             if r.data:
@@ -131,6 +169,20 @@ def decode_barcode_linear(img_bgr: np.ndarray) -> list[str]:
         for r in zxingcpp.read_barcodes(gray):
             if r.text:
                 found.add(r.text)
+
+    if enhance_steps and not found:
+        from pipeline.sr import apply_enhance_steps
+        enhanced = apply_enhance_steps(img_bgr, list(enhance_steps))
+        gray_enh = cv2.cvtColor(enhanced, cv2.COLOR_BGR2GRAY)
+        if _HAS_PYZBAR:
+            for r in _pyzbar_decode(gray_enh):
+                if r.data:
+                    found.add(r.data.decode())
+        if _HAS_ZXING:
+            for r in zxingcpp.read_barcodes(gray_enh):
+                if r.text:
+                    found.add(r.text)
+
     return sorted(found)
 
 
@@ -160,4 +212,15 @@ def cut_qr_subcrop(crop: np.ndarray) -> np.ndarray | None:
     """
     h, w = crop.shape[:2]
     sub = crop[0 : int(h * 0.42), int(w * 0.60) :]
+    return sub if sub.size > 0 else None
+
+
+def cut_barcode_strip(crop: np.ndarray, y_start: float = 0.70) -> np.ndarray | None:
+    """
+    Extract the linear barcode strip (lower portion of crop).
+
+    y_start: fraction from top where barcode region begins (default 0.70 = bottom 30%).
+    """
+    h = crop.shape[0]
+    sub = crop[int(h * y_start) :, :]
     return sub if sub.size > 0 else None

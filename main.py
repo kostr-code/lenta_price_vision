@@ -56,7 +56,7 @@ from pipeline.video import (
 )
 from pipeline.vlm import VLM_FIELDS, extract_fields_vlm, load_vlm
 
-# ── OCR is optional — import only if paddleocr is installed ──────────────────
+# ── OCR is optional — import only if paddleocr is installed ──
 try:
     from pipeline.ocr import enhance_crop, load_ocr, ocr_zoned
 
@@ -64,7 +64,24 @@ try:
 except ImportError:
     _HAS_OCR = False
 
-# ── YOLO detector is optional — import only if ultralytics is installed ───────
+# ── QR / barcode — optional (requires pyzbar or zxingcpp) ──
+try:
+    from pipeline.qr import (
+        QR_TO_CSV,
+        decode_barcode_linear,
+        decode_qr,
+        load_wechat,
+        parse_qr_payload,
+    )
+
+    _HAS_QR = True
+except ImportError:
+    _HAS_QR = False
+
+# ── Fragment provider (always available — heuristic needs only numpy/cv2) ──
+from pipeline.fragments import FragmentMap, heuristic_provider, load_yolo2_provider
+
+# ── YOLO detector is optional — import only if ultralytics is installed ──
 try:
     from pipeline.detector import (
         Detection,
@@ -77,12 +94,73 @@ try:
 except ImportError:
     _HAS_DETECTOR = False
 
+_DEFAULT_TRACKER = str(
+    Path(__file__).resolve().parent / "train" / "bytetrack_price.yaml"
+)
+
 _TRACK_TOP_K = 3  # кол-во лучших кропов на трек для ранжирования
+
+# ── WeChat lazy init ──
+_wechat = None
+
+
+def _init_wechat() -> None:
+    """
+    Load WeChat QR detector once (no-op if already loaded or unavailable).
+    """
+    global _wechat
+    if _wechat is not None or not _HAS_QR:
+        return
+    try:
+        _wechat = load_wechat()
+    except Exception as exc:
+        print(f"  [warn] WeChat QR не загружен: {exc}")
+
+
+def _decode_price_tag(
+    crop: np.ndarray,
+    fragment_provider: "FragmentProvider",
+) -> tuple[list[dict], str]:
+    """
+    Try QR and linear barcode decode on a price tag crop.
+
+    Uses fragment_provider to locate QR and barcode sub-regions — either via
+    YOLO Stage 2 detections (precise) or fixed heuristic zones (fast fallback).
+
+    Returns:
+      qr_payloads — list of dicts (from parse_qr_payload), may be empty
+      barcode_str — first EAN-13 string found, or ""
+    """
+    if not _HAS_QR:
+        return [], ""
+
+    fragments: FragmentMap = fragment_provider(crop)
+
+    # QR: provider gives precise sub-region (YOLO2) or top-right heuristic
+    qr_img = fragments.get("qr_code")
+    texts: list[str] = []
+    if qr_img is not None:
+        texts = decode_qr(qr_img, wechat=_wechat)
+    if not texts:
+        # fallback: full crop (QR might be outside detected zone)
+        texts = decode_qr(crop, wechat=_wechat)
+    qr_payloads = [parse_qr_payload(t) for t in texts if t]
+
+    # Barcode: provider gives precise sub-region (YOLO2) or bottom heuristic
+    barcode_str = ""
+    barcode_img = fragments.get("barcode")
+    if barcode_img is not None:
+        codes = decode_barcode_linear(barcode_img)
+        barcode_str = codes[0] if codes else ""
+
+    return qr_payloads, barcode_str
 
 
 @dataclass
 class _CropCandidate:
-    """Один кроп-кандидат от трека — для выбора лучшего перед VLM."""
+    """
+    Один кроп-кандидат от трека — для выбора лучшего перед VLM.
+    """
 
     crop: np.ndarray
     score: float
@@ -124,6 +202,8 @@ def process_video(
     use_ocr: bool,
     quality_threshold: float,
     scan_frames: int,
+    yolo2_weights: str | None = None,
+    device: str | None = None,
 ) -> None:
     print(f"[main] Loading {csv_path}")
     df = load_df(csv_path)
@@ -136,6 +216,18 @@ def process_video(
     if use_ocr and _HAS_OCR:
         print("[main] Loading PaddleOCR (fallback) ...")
         ocr_model = load_ocr(use_gpu=True)
+
+    _init_wechat()
+
+    if yolo2_weights and Path(yolo2_weights).exists():
+        fragment_provider = load_yolo2_provider(yolo2_weights, device=device)
+        print(f"[main] Stage 2 фрагменты: {yolo2_weights}")
+    else:
+        fragment_provider = heuristic_provider
+        if yolo2_weights:
+            print(f"[main] --weights-inside не найден ({yolo2_weights}), эвристика")
+        else:
+            print("[main] Эвристические зоны (--weights-inside не задан)")
 
     # Cache frames by timestamp — avoid re-seeking the same position
     frame_cache: dict[float, tuple] = {}
@@ -174,24 +266,31 @@ def process_video(
                 f"  [warn] Quality {quality:.3f} < {quality_threshold} — crop likely degraded"
             )
 
-        # ── Primary: VLM ──────────────────────────────────────────────────────
+        # ── QR / barcode (fast, non-blocking) ──
+        qr_payloads, barcode_str = _decode_price_tag(crop, fragment_provider)
+        if qr_payloads:
+            print(f"  QR -> {list(qr_payloads[0].keys())}")
+        if barcode_str:
+            print(f"  barcode -> {barcode_str}")
+
+        # ── Primary: VLM ──
         vlm_result = extract_fields_vlm(crop)
         print(f"  VLM -> {len([v for v in vlm_result.values() if v])} fields extracted")
 
-        # ── Fallback: PaddleOCR ───────────────────────────────────────────────
+        # ── Fallback: PaddleOCR ──
         ocr_fields: dict[str, str] = {}
         if ocr_model is not None:
             try:
                 enhanced = enhance_crop(crop)
                 lines = ocr_zoned(ocr_model, enhanced)
-                ocr_fields = parse_fields(lines, [], crop)
+                ocr_fields = parse_fields(lines, qr_payloads, crop)
             except Exception as exc:
                 print(f"  [warn] OCR failed: {exc}")
 
-        # ── Merge ─────────────────────────────────────────────────────────────
+        # ── Merge ──
         combined = _merge_vlm_and_ocr(vlm_result, ocr_fields)
 
-        # ── Build output row ──────────────────────────────────────────────────
+        # ── Build output row ──
         out_row = make_empty_row()
 
         # Metadata from source CSV (passthrough)
@@ -215,6 +314,16 @@ def process_video(
             if col in combined and combined[col]:
                 out_row[col] = normalize_text(combined[col])
 
+        # QR fields (override empty with decoded payload)
+        for payload in qr_payloads:
+            for csv_col, val in payload.items():
+                if csv_col in out_row and not out_row[csv_col]:
+                    out_row[csv_col] = val
+
+        # Barcode from linear decode (only if not already filled by VLM/OCR)
+        if barcode_str and not out_row.get("barcode"):
+            out_row["barcode"] = barcode_str
+
         # Apply absent-value defaults for optional fields
         for col in (
             "price_discount",
@@ -229,7 +338,7 @@ def process_video(
         out_row["_quality"] = f"{quality:.3f}"
         output_rows.append(out_row)
 
-    # ── Save ──────────────────────────────────────────────────────────────────
+    # ── Save ──
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     out_cols = OUTPUT_COLUMNS + ["_quality"]
     out_df = pd.DataFrame(output_rows, columns=out_cols)
@@ -262,6 +371,7 @@ def process_video_unlabeled(
     conf_det: float,
     device: str | None,
     tracker: str,
+    yolo2_weights: str | None = None,
 ) -> None:
     if not _HAS_DETECTOR:
         print("Error: ultralytics не установлен (uv add ultralytics)")
@@ -277,6 +387,18 @@ def process_video_unlabeled(
     if use_ocr and _HAS_OCR:
         print("[main] Загрузка PaddleOCR (fallback) ...")
         ocr_model = load_ocr(use_gpu=True)
+
+    _init_wechat()
+
+    if yolo2_weights and Path(yolo2_weights).exists():
+        fragment_provider = load_yolo2_provider(yolo2_weights, device=device)
+        print(f"[main] Stage 2 фрагменты: {yolo2_weights}")
+    else:
+        fragment_provider = heuristic_provider
+        if yolo2_weights:
+            print(f"[main] --weights-inside не найден ({yolo2_weights}), эвристика")
+        else:
+            print("[main] Эвристические зоны (--weights-inside не задан)")
 
     video_name = Path(video_path).name
     cap = cv2.VideoCapture(video_path)
@@ -337,6 +459,13 @@ def process_video_unlabeled(
             f"  трек {track_id}: score={best.score:.3f}  ts={best.ts_ms:.0f}ms", end=""
         )
 
+        # ── QR / barcode ──
+        qr_payloads, barcode_str = _decode_price_tag(best.crop, fragment_provider)
+        if qr_payloads:
+            print(f"  QR -> {list(qr_payloads[0].keys())}", end="")
+        if barcode_str:
+            print(f"  barcode={barcode_str}", end="")
+
         vlm_result = extract_fields_vlm(best.crop)
         print(f"  VLM->{len([v for v in vlm_result.values() if v])} полей")
 
@@ -345,7 +474,7 @@ def process_video_unlabeled(
             try:
                 enhanced = enhance_crop(best.crop)
                 lines = ocr_zoned(ocr_model, enhanced)
-                ocr_fields = parse_fields(lines, [], best.crop)
+                ocr_fields = parse_fields(lines, qr_payloads, best.crop)
             except Exception as exc:
                 print(f"    [warn] OCR failed: {exc}")
 
@@ -362,6 +491,16 @@ def process_video_unlabeled(
         for col in OUTPUT_COLUMNS:
             if col in combined and combined[col]:
                 out_row[col] = normalize_text(combined[col])
+
+        # QR fields (override empty with decoded payload)
+        for payload in qr_payloads:
+            for csv_col, val in payload.items():
+                if csv_col in out_row and not out_row[csv_col]:
+                    out_row[csv_col] = val
+
+        # Barcode from linear decode
+        if barcode_str and not out_row.get("barcode"):
+            out_row["barcode"] = barcode_str
 
         for col in (
             "price_discount",
@@ -435,7 +574,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--tracker",
-        default="train/bytetrack_price.yaml",
+        default=_DEFAULT_TRACKER,
         help="Конфиг ByteTrack трекера (--detect mode)",
     )
     parser.add_argument(
@@ -446,6 +585,11 @@ def main() -> int:
     )
     parser.add_argument(
         "--device", default=None, help="YOLO device: '0', 'cpu', etc. (--detect mode)"
+    )
+    parser.add_argument(
+        "--weights-inside",
+        default=None,
+        help="Веса Stage 2 (sub-регионы ценника); если не задан — эвристические зоны",
     )
     args = parser.parse_args()
 
@@ -467,6 +611,7 @@ def main() -> int:
             conf_det=args.conf_det,
             device=args.device,
             tracker=args.tracker,
+            yolo2_weights=args.weights_inside,
         )
     else:
         if not args.csv:
@@ -485,6 +630,8 @@ def main() -> int:
             use_ocr=args.ocr,
             quality_threshold=args.quality_thr,
             scan_frames=args.scan,
+            yolo2_weights=args.weights_inside,
+            device=args.device,
         )
     return 0
 
