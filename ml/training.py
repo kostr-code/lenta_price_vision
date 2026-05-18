@@ -49,6 +49,9 @@ class BBox:
     def area(self) -> float:
         return self.width * self.height
 
+    def as_int_tuple(self) -> tuple[int, int, int, int]:
+        return int(self.x_min), int(self.y_min), int(self.x_max), int(self.y_max)
+
 
 def bbox_iou(a: BBox, b: BBox) -> float:
     ix1, iy1 = max(a.x_min, b.x_min), max(a.y_min, b.y_min)

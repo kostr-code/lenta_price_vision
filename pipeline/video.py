@@ -33,7 +33,7 @@ def find_best_frame(
     n: int = 20,
 ) -> tuple[np.ndarray | None, float]:
     """
-    Find the sharpest frame in a ±n window around ts_ms.
+    Find the sharpest frame in a +-n window around ts_ms.
 
     Returns (rotated_frame, laplacian_variance).
     """

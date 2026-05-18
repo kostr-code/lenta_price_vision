@@ -2,7 +2,7 @@
 scripts/build_dataset.py — CLI сборки датасета с template propagation.
 
 Обёртка над ml.training.build_yolo_dataset. Дополнительно расширяет датасет:
-для каждого размеченного кадра ищет те же bbox в ±N соседних кадрах через
+для каждого размеченного кадра ищет те же bbox в +-N соседних кадрах через
 cv2.matchTemplate и добавляет найденные кадры в train-split.
 
 Запуск:
@@ -53,31 +53,48 @@ def propagate_frame(
     threshold: float,
     search_pad: int,
 ) -> list[tuple[object, list[BBox]]]:
-    """Найти каждый bbox из base_frame в ±n_frames соседних кадрах через template matching.
+    """
+    Найти каждый bbox из base_frame в +-n_frames соседних кадрах через template matching.
 
     Для каждого кадра-соседа:
       1. Вырезаем шаблон (grayscale) из base_frame по bbox
-      2. В соседнем кадре ищем шаблон в области bbox ± search_pad пикселей
+      2. В соседнем кадре ищем шаблон в области bbox +- search_pad пикселей
       3. Если cv2.TM_CCOEFF_NORMED score >= threshold — сохраняем найденный bbox
 
     Возвращает список (кадр, список найденных bbox) для кадров где нашли хотя бы 1 bbox.
+
+    Оптимизация seek: вместо 2*n_frames отдельных cap.set() делаем один seek к началу
+    окна и читаем кадры последовательно. Для H.264 это на порядок быстрее, т.к. каждый
+    random seek требует декодирования с ближайшего I-frame.
     """
+    import numpy as np  # noqa: F401 — нужен для cv2.matchTemplate внутри
+
     results = []
     step_ms = 1000.0 / max(fps, 1.0)
+    end_ms = base_ts_ms + n_frames * step_ms
 
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         return results
 
-    for offset in range(-n_frames, n_frames + 1):
-        if offset == 0:
-            continue
-        cap.set(cv2.CAP_PROP_POS_MSEC, base_ts_ms + offset * step_ms)
+    # один seek к началу окна; дальше читаем последовательно
+    start_ms = max(0.0, base_ts_ms - n_frames * step_ms)
+    cap.set(cv2.CAP_PROP_POS_MSEC, start_ms)
+
+    gray_base = cv2.cvtColor(base_frame, cv2.COLOR_BGR2GRAY)
+
+    while True:
+        frame_ms = cap.get(cv2.CAP_PROP_POS_MSEC)
         ok, frame = cap.read()
         if not ok or frame is None:
+            break
+        if frame_ms > end_ms + step_ms:
+            break
+
+        # пропускаем базовый кадр (совпадает по времени с base_ts_ms)
+        if abs(frame_ms - base_ts_ms) < step_ms * 0.5:
             continue
 
-        gray_base = cv2.cvtColor(base_frame, cv2.COLOR_BGR2GRAY)
         gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         fh, fw = frame.shape[:2]
         matched = []
@@ -93,7 +110,7 @@ def propagate_frame(
             if tmpl.size == 0:
                 continue
 
-            # область поиска = bbox ± search_pad, ограниченная размерами кадра
+            # область поиска = bbox +- search_pad, ограниченная размерами кадра
             sx1 = max(0, x1 - search_pad)
             sy1 = max(0, y1 - search_pad)
             sx2 = min(fw, x2 + search_pad)
@@ -101,8 +118,6 @@ def propagate_frame(
             region = gray_frame[sy1:sy2, sx1:sx2]
             if region.shape[0] < tmpl.shape[0] or region.shape[1] < tmpl.shape[1]:
                 continue
-
-            import numpy as np
 
             res = cv2.matchTemplate(region, tmpl, cv2.TM_CCOEFF_NORMED)
             _, score, _, loc = cv2.minMaxLoc(res)
@@ -136,11 +151,12 @@ def build_with_propagation(
     match_threshold: float,
     search_pad: int,
 ) -> None:
-    """Собрать датасет и опционально расширить его через template propagation.
+    """
+    Собрать датасет и опционально расширить его через template propagation.
 
     Фаза 1: базовый датасет из размеченных кадров (только GT timestamp'ы из CSV).
-    Фаза 2: для каждого размеченного кадра ищем те же bbox в ±n_propagate соседних
-            кадрах; найденные кадры добавляются только в train (val не трогаем).
+    Фаза 2: для каждого размеченного кадра ищем те же bbox в +-n_propagate соседних
+        кадрах; найденные кадры добавляются только в train (val не трогаем).
     """
     # фаза 1: базовый датасет — только размеченные кадры
     result = build_yolo_dataset(
@@ -182,18 +198,23 @@ def build_with_propagation(
             ts = int(parse_float(row.get("frame_timestamp", "0")))
             by_ts.setdefault(ts, []).append(row)
 
+        print(f"[prop] {seq.name}: {len(by_ts)} timestamp(s), fps={fps:.1f}")
+
         for ts_ms, rows in by_ts.items():
+            print(f"  ts={ts_ms}ms ...", end=" ", flush=True)
             # загружаем базовый (размеченный) кадр
             cap2 = cv2.VideoCapture(str(seq.video_path))
             cap2.set(cv2.CAP_PROP_POS_MSEC, ts_ms)
             ok, base_frame = cap2.read()
             cap2.release()
             if not ok or base_frame is None:
+                print("пропущен (кадр не прочитан)")
                 continue
 
             fh, fw = base_frame.shape[:2]
             bboxes = [b for row in rows if (b := row_to_bbox(row, fw, fh))]
             if not bboxes:
+                print("пропущен (нет bbox)")
                 continue
 
             prop_frames = propagate_frame(
@@ -207,6 +228,8 @@ def build_with_propagation(
                 match_threshold,
                 search_pad,
             )
+
+            print(f"{len(prop_frames)} кадров")
 
             for offset_idx, (frame, matched_bboxes) in enumerate(prop_frames):
                 stem = safe_name(f"{seq.name}_{ts_ms:08d}_prop{offset_idx:02d}")
@@ -266,7 +289,7 @@ def main() -> int:
         "--propagate",
         type=int,
         default=0,
-        help="Расширить разметку на ±N соседних кадров через template matching (0=выкл)",
+        help="Расширить разметку на +-N соседних кадров через template matching (0=выкл)",
     )
     p.add_argument(
         "--match-threshold",

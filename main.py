@@ -190,7 +190,7 @@ def main() -> int:
         "--quality-thr", type=float, default=0.2, help="Quality score threshold (warn below)"
     )
     parser.add_argument(
-        "--scan", type=int, default=20, help="±N frames to scan for sharpest frame"
+        "--scan", type=int, default=20, help="+-N frames to scan for sharpest frame"
     )
     args = parser.parse_args()
 
