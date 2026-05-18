@@ -77,13 +77,13 @@ uv run python main.py \
 --model      Qwen/Qwen2.5-VL-7B-Instruct   HuggingFace model ID
 --ocr                                        включить PaddleOCR fallback
 --quality-thr  0.2                           порог качества кропа (warn below)
---scan         20                            ±N кадров для поиска резкого
+--scan         20                            +-N кадров для поиска резкого
 ```
 
 Pipeline внутри:
 
 ```text
-load_df (CSV) → find_best_frame (±scan) → cut_crop_from_row
+load_df (CSV) → find_best_frame (+-scan) → cut_crop_from_row
 → estimate_crop_quality (h264 + FFT)
 → extract_fields_vlm (Qwen2.5-VL → JSON → 12 полей)
 → [опционально] ocr_zoned (PaddleOCR → parse_fields → остаток полей)
@@ -129,7 +129,7 @@ uv run python scripts/build_dataset.py \
 --propagate    8    Кол-во соседних кадров для template propagation (0=выкл)
 --match-threshold 0.42  cv2.matchTemplate score threshold
                         0.42 = лояльный; 0.72 = строгий (если bbox плывут)
---search-pad   80   Поиск в bbox ± N пикселей
+--search-pad   80   Поиск в bbox +- N пикселей
 --val-ratio    0.2  Доля val
 ```
 
@@ -379,8 +379,8 @@ action_price_qr, action_code_qr
 
 ```text
 [ ] Stage 1 base model
-    train/train_yolo1.sh использует yolo11n.pt по умолчанию.
-    Прежний скрипт коллеги (yolo1-train.sh) использовал yolo26n.pt.
+    train/train_yolo1.sh использует yolo26n.pt по умолчанию.
+    Прежний скрипт коллеги (yolo1-train.sh) использовал yolo11n.pt.
     Уточни что брать базой — или задай переменную:
     YOLO1_BASE_MODEL=yolo26n.pt just train-yolo1
 

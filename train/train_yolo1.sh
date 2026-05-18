@@ -4,14 +4,14 @@
 # Usage:
 #   bash train/train_yolo1.sh [path/to/data.yaml]
 #
-# Defaults to runs/datasets/lenta_yolo_tiled/data.yaml if not specified.
+# Defaults to runs/datasets/lenta_yolo/data.yaml if not specified.
 # Override base model via: YOLO1_BASE_MODEL=yolo11n.pt bash train/train_yolo1.sh
 #
 
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-DATA_YAML="${1:-$REPO/runs/datasets/price_tag_dataset_1/data.yaml}"
+DATA_YAML="${1:-$REPO/runs/datasets/lenta_yolo/data.yaml}"
 RUNS_DIR="$REPO/runs/detect"
 
 MODEL="${YOLO1_BASE_MODEL:-yolo26n.pt}"

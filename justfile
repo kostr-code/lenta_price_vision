@@ -1,7 +1,7 @@
 default:
     just --list
 
-# ── Inference ────────────────────────────────────────────────────────────────
+# ── Inference ──
 
 # Qwen-VL для одной картинки или папки с картинками.
 qwen-debug path="data/testdata/crops_mid_01":
@@ -11,7 +11,7 @@ qwen-debug path="data/testdata/crops_mid_01":
 qwen-debug-recursive path="data/testdata/crops_mid_01":
     uv run python test_qwen3vl.py --recursive "{{path}}"
 
-# ── Dataset ───────────────────────────────────────────────────────────────────
+# ── Dataset ──
 
 # Собрать YOLO-датасет (полные кадры) из labeled CSV+MP4.
 # Параметры: data (источник), out (выход), prop (template propagation, 0=выкл).
@@ -46,7 +46,7 @@ dataset-review dataset="runs/datasets/lenta_yolo" split="train":
       --dataset {{dataset}} \
       --split {{split}}
 
-# ── Stage 1: детектор ценников ────────────────────────────────────────────────
+# ── Stage 1: детектор ценников ──
 
 # Обучить Stage 1 (price-tag detector).
 train-yolo1 dataset="runs/datasets/lenta_yolo":
@@ -58,7 +58,7 @@ save-yolo1 run="price_tag_yolo":
     cp runs/detect/{{run}}/weights/best.pt models/price_tag_yolo.pt
     @echo "Сохранено → models/price_tag_yolo.pt"
 
-# ── Stage 2: внутренние элементы ценника ─────────────────────────────────────
+# ── Stage 2: внутренние элементы ценника ──
 
 # Прогнать Stage 1 по датасету и сохранить кропы ценников для Stage 2.
 crop-for-stage2 dataset="runs/datasets/lenta_yolo":
@@ -78,7 +78,7 @@ prepare-cvat source="runs/cvat_inside_export" out="runs/datasets/lenta_inside_yo
 
 # Обучить Stage 2 (inside elements detector).
 train-yolo2 dataset="runs/datasets/lenta_inside_yolo":
-    bash train/train_yolo2.sh {{dataset}}/data.yaml
+    YOLO2_BASE_MODEL=yolo26n.pt bash train/train_yolo2.sh {{dataset}}/data.yaml
 
 # Скопировать лучшие веса Stage 2 в models/.
 save-yolo2 run="inside_price_tag_yolo":
@@ -86,7 +86,34 @@ save-yolo2 run="inside_price_tag_yolo":
     cp runs/detect/{{run}}/weights/best.pt models/inside_price_tag_yolo.pt
     @echo "Сохранено → models/inside_price_tag_yolo.pt"
 
-# ── Полный цикл Stage 1 (одной командой) ─────────────────────────────────────
+# ── Псевдолейблинг (расширение датасета без ручной разметки)
+#
+# Stage 1: прогнать детектор ценников по unlabeled видео → кадры + YOLO-метки.
+#   Сценарий: после первого обучения Stage 1 хочется добавить данных.
+#   1. just pseudo-label-stage1            ← сгенерировать псевдолейблы
+#   2. just dataset-review --dataset runs/pseudo/stage1_unlabeled  ← отчистить плохое
+#   3. Смерджить хорошее в основной датасет, переобучить Stage 1.
+pseudo-label-stage1 video_dir="data/Данные/Unlabeled" out="runs/pseudo/stage1_unlabeled":
+    uv run python scripts/pseudo_label_stage1.py \
+      --video-dir {{video_dir}} \
+      --weights   models/price_tag_yolo.pt \
+      --out-dir   {{out}} \
+      --sample-every 25 \
+      --conf 0.35
+
+# Stage 2: прогнать inside-детектор по кропам ценников → YOLO-метки + preview.
+#   Сценарий: после первого обучения Stage 2 нужно псевдоразметить остальные кропы.
+#   1. just pseudo-label-stage2            ← сгенерировать псевдолейблы
+#   2. just dataset-review --dataset runs/pseudo/stage2_inside  ← почистить
+#   3. Импортировать в CVAT, доправить, добавить в датасет Stage 2, переобучить.
+pseudo-label-stage2 source="runs/datasets/lenta_yolo/crops_for_stage2" out="runs/pseudo/stage2_inside":
+    uv run python scripts/pseudo_label_stage2.py \
+      --source  {{source}} \
+      --weights models/inside_price_tag_yolo.pt \
+      --out-dir {{out}} \
+      --conf 0.25
+
+# ── Полный цикл Stage 1 (одной командой)
 
 # Весь Stage 1 pipeline: датасет → проверка → тренировка.
 # Веса НЕ копируются автоматически — сделать just save-yolo1 вручную после проверки.

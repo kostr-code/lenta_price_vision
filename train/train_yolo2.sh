@@ -4,12 +4,12 @@
 # Usage:
 #   bash train/train_yolo2.sh [path/to/data.yaml]
 #
-# Requires Stage 1 weights at models/price_tag_yolo.pt (or set YOLO2_BASE_MODEL).
+# May require Stage 1 weights at models/price_tag_yolo.pt (or set YOLO2_BASE_MODEL).
 #
 # TODO(коллега):
 #   1. Подтвердить датасет: runs/datasets/lenta_inside_yolo/data.yaml
 #      (собирается через: just crop-for-stage2 → разметка в CVAT → just prepare-cvat)
-#   2. Стартовать с Stage 1 весов (трансфер) или с pretrained yolo11n.pt?
+#   2. Стартовать с Stage 1 весов (трансфер) или с pretrained yolo26n.pt?
 #      Сейчас default = Stage 1 веса (трансфер обычно лучше для похожего домена)
 #   3. Классы внутри ценника — что именно детектируем? (barcode, qr, price_zone, ...)
 
@@ -34,8 +34,8 @@ fi
 
 if [[ ! -f "$MODEL" ]]; then
     echo "Warning: base model not found: $MODEL"
-    echo "Falling back to yolo11n.pt (pretrained)"
-    MODEL="yolo11n.pt"
+    echo "Falling back to yolo26n.pt (pretrained)"
+    MODEL="yolo26n.pt"
 fi
 
 echo "[train] Stage 2 inside elements detector"
