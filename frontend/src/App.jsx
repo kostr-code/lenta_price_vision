@@ -62,12 +62,9 @@ export default function App() {
   const [backendUrl, setBackendUrl] = useState(DEFAULT_BACKEND_URL);
   const [mediaFile, setMediaFile] = useState(null);
   const [mode, setMode] = useState("accurate");
-  const [overrideSampleFps, setOverrideSampleFps] = useState(true);
   const [sampleFps, setSampleFps] = useState("2.0");
   const [maxFrames, setMaxFrames] = useState("0");
-  const [enableOcr, setEnableOcr] = useState(true);
   const [enableQr, setEnableQr] = useState(true);
-  const [saveCrops, setSaveCrops] = useState(false);
 
   const [isRunning, setIsRunning] = useState(false);
   const [status, setStatus] = useState("Idle");
@@ -84,6 +81,11 @@ export default function App() {
       framesSeen: result.frames_seen ?? "-",
       detectionsSeen: result.detections_seen ?? "-",
     };
+  }, [result]);
+
+  const cropRows = useMemo(() => {
+    if (!result || !Array.isArray(result.rows)) return [];
+    return result.rows.filter((r) => r && typeof r === "object");
   }, [result]);
 
   const hasResult = Boolean(result && typeof result === "object");
@@ -107,9 +109,7 @@ export default function App() {
     const payload = new FormData();
     payload.append("file", mediaFile);
     payload.append("mode", mode);
-    payload.append("enable_ocr", toFormBoolean(enableOcr));
     payload.append("enable_qr", toFormBoolean(enableQr));
-    payload.append("save_crops", toFormBoolean(saveCrops));
 
     if (!isImageUpload) {
       const parsedMaxFrames = Number.parseInt(maxFrames, 10);
@@ -117,12 +117,8 @@ export default function App() {
         Number.isFinite(parsedMaxFrames) && parsedMaxFrames >= 0 ? parsedMaxFrames : 0;
       payload.append("max_frames", String(safeMaxFrames));
 
-      if (overrideSampleFps) {
-        const parsedSampleFps = Number.parseFloat(sampleFps);
-        if (!Number.isFinite(parsedSampleFps) || parsedSampleFps <= 0) {
-          setError("Sample FPS must be a positive number.");
-          return;
-        }
+      const parsedSampleFps = Number.parseFloat(sampleFps);
+      if (Number.isFinite(parsedSampleFps) && parsedSampleFps > 0) {
         payload.append("sample_fps", String(parsedSampleFps));
       }
     }
@@ -235,9 +231,8 @@ export default function App() {
               <label>
                 <span>Mode</span>
                 <select value={mode} onChange={(event) => setMode(event.target.value)}>
-                  <option value="cpu_safe">cpu_safe</option>
-                  <option value="fast">fast</option>
-                  <option value="accurate">accurate</option>
+                  <option value="accurate">VLM + OCR (полный)</option>
+                  <option value="cpu_safe">Только OCR (быстрый)</option>
                 </select>
               </label>
               <label>
@@ -253,40 +248,24 @@ export default function App() {
               </label>
             </div>
 
-            <label className="toggle-row">
-              <input
-                type="checkbox"
-                checked={overrideSampleFps}
-                onChange={(event) => setOverrideSampleFps(event.target.checked)}
-                disabled={selectedIsImage}
-              />
-              <span>Override sample FPS</span>
-            </label>
-
             <label className="field">
               <span>Sample FPS</span>
               <input
                 type="number"
-                min="0.1"
+                min="0"
                 step="0.1"
                 value={sampleFps}
                 onChange={(event) => setSampleFps(event.target.value)}
-                disabled={selectedIsImage || !overrideSampleFps}
+                disabled={selectedIsImage}
               />
             </label>
-            {selectedIsImage ? (
-              <p className="hint">Photo selected: frame sampling options are skipped.</p>
-            ) : null}
+            <p className="hint">
+              {selectedIsImage
+                ? "Photo selected: frame sampling options are skipped."
+                : "0 = без ограничений (все кадры)"}
+            </p>
 
             <div className="toggle-grid">
-              <label className="toggle-row">
-                <input
-                  type="checkbox"
-                  checked={enableOcr}
-                  onChange={(event) => setEnableOcr(event.target.checked)}
-                />
-                <span>Enable OCR</span>
-              </label>
               <label className="toggle-row">
                 <input
                   type="checkbox"
@@ -294,14 +273,6 @@ export default function App() {
                   onChange={(event) => setEnableQr(event.target.checked)}
                 />
                 <span>Enable QR</span>
-              </label>
-              <label className="toggle-row">
-                <input
-                  type="checkbox"
-                  checked={saveCrops}
-                  onChange={(event) => setSaveCrops(event.target.checked)}
-                />
-                <span>Save crops</span>
               </label>
             </div>
 
@@ -352,7 +323,44 @@ export default function App() {
           </section>
         </form>
 
-        <section className="panel full-width">
+        {cropRows.length > 0 && (
+          <section className="panel full-width" style={{ marginTop: "14px" }}>
+            <h2>Распознанные ценники</h2>
+            <div className="crop-grid">
+              {cropRows.map((row, i) => {
+                const imgSrc = row._crop_url
+                  ? resolveDownloadUrl(backendUrl, row._crop_url)
+                  : "";
+                return (
+                  <div key={i} className="crop-card">
+                    {imgSrc ? (
+                      <img src={imgSrc} alt={`ценник ${i + 1}`} loading="lazy" />
+                    ) : (
+                      <div className="crop-placeholder" />
+                    )}
+                    <div className="crop-card-body">
+                      <p className="crop-name">{row.product_name || "—"}</p>
+                      <p className="crop-prices">
+                        {row.price_card || "—"}
+                        {row.price_default ? ` / ${row.price_default}` : ""}
+                      </p>
+                      <p className="crop-meta">
+                        {row.color ? (
+                          <span className="crop-color">{row.color}</span>
+                        ) : null}
+                        {row._quality ? (
+                          <span className="crop-quality">q: {row._quality}</span>
+                        ) : null}
+                      </p>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        )}
+
+        <section className="panel full-width" style={{ marginTop: "14px" }}>
           <h2>Backend Response</h2>
           <pre className="json-view">{hasResult ? prettyJson(result) : "No result yet."}</pre>
         </section>

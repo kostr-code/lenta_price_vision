@@ -86,6 +86,8 @@ async def predict_image(
         if app_settings.weights_stage1 and Path(app_settings.weights_stage1).exists():
             detections = detect_price_tags(img, conf=0.25)
             from pipeline.video import cut_crop_bbox
+            crops_dir = Path(app_settings.runs_dir) / run_id / "crops"
+            crops_dir.mkdir(parents=True, exist_ok=True)
             for det in detections:
                 crop = cut_crop_bbox(img, det.x1, det.y1, det.x2, det.y2)
                 if crop is not None and crop.size > 0:
@@ -94,16 +96,23 @@ async def predict_image(
                     row["y_min"] = str(det.y1)
                     row["x_max"] = str(det.x2)
                     row["y_max"] = str(det.y2)
+                    crop_filename = f"crop_{len(rows)}.jpg"
+                    cv2.imwrite(str(crops_dir / crop_filename), crop, [cv2.IMWRITE_JPEG_QUALITY, 90])
+                    row["_crop_url"] = f"/download/{run_id}/crops/{crop_filename}"
                     rows.append(row)
     except Exception as exc:
         log.warning("image.detect_failed", error=str(exc))
 
+    from api.ml_app import settings as app_settings
+
     # Fallback: treat whole image as a crop
     if not rows:
         row = process_single_crop(img, **flags)
+        crops_dir = Path(app_settings.runs_dir) / run_id / "crops"
+        crops_dir.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(crops_dir / "crop_0.jpg"), img, [cv2.IMWRITE_JPEG_QUALITY, 90])
+        row["_crop_url"] = f"/download/{run_id}/crops/crop_0.jpg"
         rows.append(row)
-
-    from api.ml_app import settings as app_settings
     files = save_run_files(run_id, rows, app_settings.runs_dir)
     result = RunResult(run_id=run_id, status="ok", rows=rows, files=files)
     save_run(result)

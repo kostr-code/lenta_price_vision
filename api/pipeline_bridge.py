@@ -461,6 +461,13 @@ def process_video_file(
 
         _fill_output_row(out_row, combined, qr_payloads, barcode_str, best.score)
         out_row["_track_id"] = str(track_id)
+
+        crops_dir = Path(runs_dir) / run_id / "crops"
+        crops_dir.mkdir(parents=True, exist_ok=True)
+        crop_filename = f"track_{track_id}.jpg"
+        cv2.imwrite(str(crops_dir / crop_filename), best.crop, [cv2.IMWRITE_JPEG_QUALITY, 90])
+        out_row["_crop_url"] = f"/download/{run_id}/crops/{crop_filename}"
+
         output_rows.append(out_row)
 
     log.info("video.done", rows=len(output_rows))
