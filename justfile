@@ -1,7 +1,40 @@
 default:
     just --list
 
+# ── API серверы ──
+
+# Запустить ML-сервис (port 8000) — реальный inference
+ml host="0.0.0.0" port="8000":
+    HOST={{host}} PORT={{port}} uv run python ml_server.py
+
+# Запустить gateway (port 8001) — проксирует запросы на ML
+gw host="0.0.0.0" port="8001":
+    HOST={{host}} PORT={{port}} uv run python mock_api_backend.py
+
+# Тест health endpoint
+health:
+    curl -s http://localhost:8000/health | python -m json.tool
+
 # ── Inference ──
+
+# Прогнать полный пайплайн по labeled видео (GT CSV -> распознавание -> CSV).
+run video="data/Данные/43_15/43_15.mp4" csv="data/Данные/43_15/43_15.csv" out="runs/results/out.csv":
+    uv run python main.py \
+      --video          {{video}} \
+      --csv            {{csv}} \
+      --out            {{out}} \
+      --weights-inside models/inside_price_tag_yolo.pt \
+      --ocr
+
+# Прогнать по unlabeled видео (YOLO+ByteTrack -> YOLO2 фрагменты -> VLM+OCR -> CSV).
+detect video="data/Данные/Unlabeled" out="runs/results/unlabeled.csv":
+    uv run python main.py \
+      --video          {{video}} \
+      --detect \
+      --weights        models/price_tag_yolo.pt \
+      --weights-inside models/inside_price_tag_yolo.pt \
+      --out            {{out}} \
+      --ocr
 
 # Qwen-VL для одной картинки или папки с картинками.
 qwen-debug path="data/testdata/crops_mid_01":

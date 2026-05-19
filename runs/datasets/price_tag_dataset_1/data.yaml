@@ -1,5 +1,0 @@
-path: F:/lenta_price_vision/packages/ml/src/ml/runs/datasets/lenta_yolo_full_prop10
-train: images/train
-val: images/val
-names:
-  0: price_tag

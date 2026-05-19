@@ -54,7 +54,7 @@ from pipeline.video import (
     load_df,
     rotate_frame,
 )
-from pipeline.vlm import VLM_FIELDS, extract_fields_vlm, load_vlm
+from pipeline.vlm import VLMConfig, Qwen25VLProvider, VLMProvider
 
 # ── OCR is optional — import only if paddleocr is installed ──
 try:
@@ -67,7 +67,6 @@ except ImportError:
 # ── QR / barcode — optional (requires pyzbar or zxingcpp) ──
 try:
     from pipeline.qr import (
-        QR_TO_CSV,
         decode_barcode_linear,
         decode_qr,
         load_wechat,
@@ -79,7 +78,12 @@ except ImportError:
     _HAS_QR = False
 
 # ── Fragment provider (always available — heuristic needs only numpy/cv2) ──
-from pipeline.fragments import FragmentMap, heuristic_provider, load_yolo2_provider
+from pipeline.fragments import (
+    FragmentMap,
+    FragmentProvider,
+    heuristic_provider,
+    load_yolo2_provider,
+)
 
 # ── YOLO detector is optional — import only if ultralytics is installed ──
 try:
@@ -99,6 +103,19 @@ _DEFAULT_TRACKER = str(
 )
 
 _TRACK_TOP_K = 3  # кол-во лучших кропов на трек для ранжирования
+
+# ── Enhancement steps ─────────────────────────────────────────────────────────
+# Поставить [] чтобы отключить улучшение перед декодированием.
+# Только лёгкие CPU-операции — ESRGAN на 70px баркоде не нужен.
+try:
+    from pipeline.sr import enhance_clahe, enhance_sharpen
+
+    BARCODE_ENHANCE_STEPS: list = [enhance_clahe, enhance_sharpen]
+except ImportError:
+    BARCODE_ENHANCE_STEPS = []
+
+# QR: WeChat со встроенным SR справляется без дополнительных шагов
+QR_ENHANCE_STEPS: list = []
 
 # ── WeChat lazy init ──
 _wechat = None
@@ -140,17 +157,17 @@ def _decode_price_tag(
     qr_img = fragments.get("qr_code")
     texts: list[str] = []
     if qr_img is not None:
-        texts = decode_qr(qr_img, wechat=_wechat)
+        texts = decode_qr(qr_img, wechat=_wechat, enhance_steps=QR_ENHANCE_STEPS)
     if not texts:
         # fallback: full crop (QR might be outside detected zone)
-        texts = decode_qr(crop, wechat=_wechat)
+        texts = decode_qr(crop, wechat=_wechat, enhance_steps=QR_ENHANCE_STEPS)
     qr_payloads = [parse_qr_payload(t) for t in texts if t]
 
     # Barcode: provider gives precise sub-region (YOLO2) or bottom heuristic
     barcode_str = ""
     barcode_img = fragments.get("barcode")
     if barcode_img is not None:
-        codes = decode_barcode_linear(barcode_img)
+        codes = decode_barcode_linear(barcode_img, enhance_steps=BARCODE_ENHANCE_STEPS)
         barcode_str = codes[0] if codes else ""
 
     return qr_payloads, barcode_str
@@ -198,7 +215,7 @@ def process_video(
     video_path: str,
     csv_path: str,
     out_path: str,
-    model_id: str,
+    vlm_provider: "VLMProvider",
     use_ocr: bool,
     quality_threshold: float,
     scan_frames: int,
@@ -209,8 +226,7 @@ def process_video(
     df = load_df(csv_path)
     video_name = Path(video_path).name
 
-    print(f"[main] Loading VLM: {model_id}")
-    load_vlm(model_id)
+    vlm_provider.load()
 
     ocr_model = None
     if use_ocr and _HAS_OCR:
@@ -274,7 +290,7 @@ def process_video(
             print(f"  barcode -> {barcode_str}")
 
         # ── Primary: VLM ──
-        vlm_result = extract_fields_vlm(crop)
+        vlm_result = vlm_provider.extract_fields(crop)
         print(f"  VLM -> {len([v for v in vlm_result.values() if v])} fields extracted")
 
         # ── Fallback: PaddleOCR ──
@@ -365,13 +381,14 @@ def process_video_unlabeled(
     video_path: str,
     out_path: str,
     weights: str,
-    model_id: str,
+    vlm_provider: "VLMProvider",
     use_ocr: bool,
     quality_threshold: float,
     conf_det: float,
     device: str | None,
     tracker: str,
     yolo2_weights: str | None = None,
+    append: bool = False,
 ) -> None:
     if not _HAS_DETECTOR:
         print("Error: ultralytics не установлен (uv add ultralytics)")
@@ -380,8 +397,7 @@ def process_video_unlabeled(
     print(f"[main] Загрузка детектора: {weights}")
     load_detector(weights)
 
-    print(f"[main] Загрузка VLM: {model_id}")
-    load_vlm(model_id)
+    vlm_provider.load()
 
     ocr_model = None
     if use_ocr and _HAS_OCR:
@@ -466,7 +482,7 @@ def process_video_unlabeled(
         if barcode_str:
             print(f"  barcode={barcode_str}", end="")
 
-        vlm_result = extract_fields_vlm(best.crop)
+        vlm_result = vlm_provider.extract_fields(best.crop)
         print(f"  VLM->{len([v for v in vlm_result.values() if v])} полей")
 
         ocr_fields: dict[str, str] = {}
@@ -519,7 +535,7 @@ def process_video_unlabeled(
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     out_cols = OUTPUT_COLUMNS + ["_quality", "_track_id"]
     out_df = pd.DataFrame(output_rows, columns=out_cols)
-    out_df.to_csv(out_path, index=False)
+    out_df.to_csv(out_path, index=False, mode="a" if append else "w", header=not append)
     print(f"\n[main] Сохранено {len(out_df)} строк -> {out_path}")
 
     if output_rows:
@@ -591,28 +607,62 @@ def main() -> int:
         default=None,
         help="Веса Stage 2 (sub-регионы ценника); если не задан — эвристические зоны",
     )
+    parser.add_argument(
+        "--vlm-4bit",
+        action="store_true",
+        help="Загрузить VLM в 4-bit (bitsandbytes); экономит ~9GB VRAM для 7B",
+    )
+    parser.add_argument(
+        "--vlm-device-map",
+        default="cuda",
+        help="device_map для VLM: 'cuda' (по умолч.), 'auto', 'cuda:1', etc.",
+    )
     args = parser.parse_args()
 
-    if not Path(args.video).exists():
+    video_arg = Path(args.video)
+    if not video_arg.exists():
         print(f"Error: видео не найдено: {args.video}")
         return 1
+
+    vlm_provider = Qwen25VLProvider(
+        VLMConfig(
+            model_id=args.model,
+            load_in_4bit=args.vlm_4bit,
+            device_map=args.vlm_device_map,
+        )
+    )
 
     if args.detect:
         if not Path(args.weights).exists():
             print(f"Error: веса детектора не найдены: {args.weights}")
             return 1
-        process_video_unlabeled(
-            video_path=args.video,
-            out_path=args.out,
-            weights=args.weights,
-            model_id=args.model,
-            use_ocr=args.ocr,
-            quality_threshold=args.quality_thr,
-            conf_det=args.conf_det,
-            device=args.device,
-            tracker=args.tracker,
-            yolo2_weights=args.weights_inside,
-        )
+
+        # Поддержка директории: собираем все .mp4 в единый выходной CSV
+        if video_arg.is_dir():
+            video_files = sorted(video_arg.glob("*.mp4")) + sorted(
+                video_arg.glob("*.MP4")
+            )
+            if not video_files:
+                print(f"Error: в директории нет .mp4 файлов: {video_arg}")
+                return 1
+            print(f"[main] Директория: {len(video_files)} видео -> {args.out}")
+        else:
+            video_files = [video_arg]
+
+        for i, vf in enumerate(video_files):
+            process_video_unlabeled(
+                video_path=str(vf),
+                out_path=args.out,
+                weights=args.weights,
+                vlm_provider=vlm_provider,
+                use_ocr=args.ocr,
+                quality_threshold=args.quality_thr,
+                conf_det=args.conf_det,
+                device=args.device,
+                tracker=args.tracker,
+                yolo2_weights=args.weights_inside,
+                append=(i > 0),
+            )
     else:
         if not args.csv:
             print(
@@ -626,7 +676,7 @@ def main() -> int:
             video_path=args.video,
             csv_path=args.csv,
             out_path=args.out,
-            model_id=args.model,
+            vlm_provider=vlm_provider,
             use_ocr=args.ocr,
             quality_threshold=args.quality_thr,
             scan_frames=args.scan,
