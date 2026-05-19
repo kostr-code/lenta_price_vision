@@ -11,6 +11,10 @@ ml host="0.0.0.0" port="8000":
 gw host="0.0.0.0" port="8001" ml_url="http://localhost:8000":
     HOST={{host}} PORT={{port}} ML_URL={{ml_url}} uv run python api_gateway.py
 
+# Запустить React фронтенд (port 5173)
+front:
+    cd frontend && npm install --silent && npm run dev
+
 # Тест health endpoint
 health:
     curl -s http://localhost:8000/health | python -m json.tool
