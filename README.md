@@ -1,125 +1,179 @@
-# lenta_price_vision
+# Lenta Price Vision
 
-Retail price-tag recognition stack:
+Сервис автоматической оцифровки ценников из видеопотока робота.
+Принимает MP4 или изображение, возвращает структурированный CSV (29 полей).
 
-- `backend` (FastAPI gateway)
-- `ml` (FastAPI inference service, run outside Docker by default)
-- `frontend` (React + Vite web UI)
+## Требования
 
-## Services and URLs
+| | |
+|---|---|
+| GPU | ≥ 6 GB VRAM (Qwen2.5-VL-3B без квантизации; 4-bit режим — ≈ 3 GB) |
+| CUDA | ≥ 12.x |
+| Python | 3.12+ |
+| Менеджер пакетов | [uv](https://docs.astral.sh/uv/) |
+| Node.js | 18+ (только для фронтенда) |
+| ffmpeg | для генерации аннотированного видео |
 
-- Frontend: `http://localhost:5173`
-- Backend: `http://localhost:8001`
-- ML: `http://localhost:8000` (local service used by backend through `ML_URL`)
-- Postgres: `localhost:5433`
-
-## Prerequisites
-
-- Docker + Docker Compose
-- `uv` (for Python local runs)
-- Node.js `20+` and npm (for frontend local run)
-
-## Quick Launch (Docker, recommended)
-
-1. Copy env file:
-
-```powershell
-Copy-Item .env.example .env
-```
-
-2. Start development stack:
-
-```powershell
-docker compose `
-  -f docker-compose.yml `
-  -f infra/compose/docker-compose.dev.yml `
-  up --build
-```
-
-3. Check health:
-
-```powershell
-curl http://localhost:8001/health
-```
-
-4. Open apps:
-
-- Frontend UI: `http://localhost:5173`
-- Backend docs: `http://localhost:8001/docs`
-- ML docs: `http://localhost:8000/docs`
-
-## Launch via Make (if `make` is installed)
+## Установка
 
 ```bash
-make dev
-```
-
-Smoke test:
-
-```bash
-make smoke
-```
-
-Stop:
-
-```bash
-make down
-```
-
-## Local Launch (without Docker)
-
-1. Install Python dependencies:
-
-```powershell
+# Python-зависимости (uv создаёт venv автоматически)
 uv sync
-cd packages/ml
-uv sync
-cd ../..
+
+# Фронтенд
+cd frontend && npm install && cd ..
 ```
 
-2. Start backend services in separate terminals:
+## Данные
 
-Terminal 1 (ML):
+Ожидаемая структура:
 
-```powershell
-cd packages/ml
-uv run ml-service
+```
+data/Данные/
+├── 25_12-20/
+│   ├── 25_12-20.csv      # разметка: bbox + 29 полей ценника
+│   └── 2.mp4
+├── 43_15/
+│   ├── 43_15.csv
+│   └── 43_15.mp4
+└── Unlabeled/
+    ├── 25_12-20.mp4
+    ├── 26_12-20.mp4
+    └── ...
 ```
 
-Terminal 2 (Backend):
+## Веса YOLO
 
-```powershell
-cd packages/backend
-$env:ML_URL="http://localhost:8000"
-uv run backend
+Скачать с Яндекс.Диска: **https://disk.yandex.ru/d/u9GjAQhiGbhoDg**
+
+Положить в `models/`:
+
+```
+models/
+├── price_tag_yolo.pt           # Stage 1 — детектор ценников
+└── inside_price_tag_yolo.pt    # Stage 2 — QR/barcode субрегионы (опционально)
 ```
 
-3. Start frontend:
+VLM (`Qwen/Qwen2.5-VL-3B-Instruct`) скачивается автоматически с HuggingFace при первом запуске.
 
-```powershell
-cd packages/frontend
-npm install
-npm run dev
+## Запуск
+
+В трёх отдельных терминалах:
+
+```bash
+just ml      # ML-сервис  :8000  (загружает модели при старте, ~1–2 мин)
+just gw      # Gateway    :8001
+just front   # React UI   :5173
 ```
 
-4. Open frontend at `http://localhost:5173`.
+```bash
+just health  # проверить что ML-сервис отвечает
+```
 
-## Frontend to backend integration
+Открыть **http://localhost:5173** → загрузить видео или фото → нажать **Run Recognition**.
 
-Frontend uses backend endpoints:
+## Конфигурация
 
-- `POST /api/v1/predict/video`
-- `POST /api/v1/predict/image`
-- `GET /api/v1/schema`
-- `GET /api/v1/datasets`
-- `GET /api/v1/download/{run_id}/{filename}`
+### ML-сервис (`ML_*`)
 
-Backend response includes:
+| Переменная | Дефолт | Описание |
+|---|---|---|
+| `ML_VLM_MODEL_ID` | `Qwen/Qwen2.5-VL-3B-Instruct` | HuggingFace model id |
+| `ML_VLM_4BIT` | `false` | 4-bit квантизация (≈ 3 GB VRAM) |
+| `ML_VLM_DEVICE_MAP` | `cuda` | device_map для transformers |
+| `ML_WEIGHTS_STAGE1` | `models/price_tag_yolo.pt` | YOLO Stage 1 веса |
+| `ML_WEIGHTS_INSIDE` | — | YOLO Stage 2 веса (опционально) |
+| `ML_RUNS_DIR` | `runs/api` | папка для CSV / JSON / видео результатов |
+| `ML_QUALITY_THRESHOLD` | `0.2` | минимальный quality score кропа |
+| `ML_LOG_LEVEL` | `INFO` | уровень логирования |
 
-- `backend_download`
-- `backend_debug_download`
+### Gateway
 
-Frontend uses these links to download CSV/debug files.
+| Переменная | Дефолт | Описание |
+|---|---|---|
+| `ML_URL` | `http://ml:8000` | адрес ML-сервиса; для локальной разработки `just gw` передаёт `http://localhost:8000` автоматически |
 
-Frontend file upload supports both video and image files. Video uploads are routed to
-`/api/v1/predict/video`, image uploads to `/api/v1/predict/image`.
+## Архитектура
+
+```
+[React :5173]
+      │  POST /api/v1/predict/{video,image}
+      ▼
+[Gateway :8001]  api_gateway.py
+      │  проксирует на ML; переписывает /download/ → /api/v1/download/
+      ▼
+[ML Service :8000]  ml_server.py + api/
+      │  держит модели в памяти (load_models при старте)
+      ▼
+pipeline/  — переиспользуемые модули
+```
+
+## Pipeline
+
+### Видео (unlabeled)
+
+```
+MP4
+  └─ rotate 90° → YOLO Stage 1 + ByteTrack
+        └─ top-K кропов на трек → выбрать best по quality score
+              ├─ YOLO Stage 2 → QR/barcode субрегионы → decode
+              ├─ Qwen2.5-VL  → JSON (6 текстовых полей)
+              └─ PaddleOCR   → parse_fields → 29 полей
+        └─ merge (VLM primary, OCR fillback)
+
+Результат: output.csv  debug.json  crops/*.jpg  annotated.mp4
+```
+
+### Изображение
+
+```
+JPG/PNG → rotate 90° → [YOLO Stage 1 detect, если есть веса] → кропы
+        └─ тот же процессинг (QR + VLM + OCR + merge)
+```
+
+## VLM-промпт
+
+Редактировать в `prompts/qwen_extract.md` — перезагружается при рестарте ML-сервиса без изменения кода.
+
+## Выходной CSV
+
+29 полей на строку (один уникальный ценник):
+
+| Группа | Поля |
+|---|---|
+| Координаты | `filename`, `frame_timestamp`, `x_min`, `y_min`, `x_max`, `y_max` |
+| Текст (VLM/OCR) | `product_name`, `price_card`, `price_default`, `price_discount`, `discount_amount`, `barcode`, `id_sku`, `print_datetime`, `code`, `additional_info`, `color`, `special_symbols` |
+| Из QR-кода | `qr_code_barcode`, `price1_qr`, `price2_qr`, `price3_qr`, `price4_qr`, `wholesale_level_1_count`, `wholesale_level_1_price`, `wholesale_level_2_count`, `wholesale_level_2_price`, `action_price_qr`, `action_code_qr` |
+
+## Структура кода
+
+```
+sol_main/
+  ml_server.py              — uvicorn entry point (ML :8000)
+  api_gateway.py            — gateway proxy (:8001)
+  prompts/
+    qwen_extract.md         — VLM extraction prompt
+  api/
+    ml_app.py               — FastAPI app + lifespan (load_models)
+    config.py               — MLSettings из env
+    pipeline_bridge.py      — singletons + process_video_file / process_single_crop
+    routers/
+      predict.py            — POST /predict/{video,image,path}
+      download.py           — GET /download/{run_id}/{path:path}
+      meta.py               — GET /health, /schema
+  pipeline/
+    detector.py             — YOLO Stage 1: detect_price_tags, track_price_tags
+    vlm.py                  — VLMProvider protocol + Qwen25VLProvider
+    ocr.py                  — PaddleOCR: enhance_crop, ocr_zoned
+    parsers.py              — parse_fields, OUTPUT_COLUMNS
+    qr.py                   — decode_qr, decode_barcode_linear
+    fragments.py            — YOLO Stage 2: FragmentProvider
+    quality.py              — estimate_crop_quality
+    video.py                — rotate_frame, cut_crop_bbox
+  models/
+    price_tag_yolo.pt
+    inside_price_tag_yolo.pt
+  frontend/
+    src/App.jsx             — React UI
+    src/styles.css
+```
