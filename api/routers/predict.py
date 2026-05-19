@@ -11,7 +11,7 @@ import structlog
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
-from api.pipeline_bridge import process_single_crop, process_video_file, save_run_files
+from api.pipeline_bridge import VideoResult, process_single_crop, process_video_file, save_run_files
 from api.run_store import RunResult, new_run_id, save_run
 from pipeline.video import rotate_frame
 
@@ -38,12 +38,16 @@ def _make_response(
     run_id: str,
     rows: list[dict[str, str]],
     files: dict,
+    frames_seen: int = 0,
+    detections_seen: int = 0,
 ) -> dict[str, Any]:
     return {
         "run_id": run_id,
         "status": "ok",
         "rows": rows,
         "row_count": len(rows),
+        "frames_seen": frames_seen,
+        "detections_seen": detections_seen,
         "download": f"/download/{run_id}/output.csv",
         "debug_download": f"/download/{run_id}/debug.json",
     }
@@ -139,12 +143,15 @@ async def predict_video(
 
     # Run pipeline
     try:
-        rows = process_video_file(
+        vr: VideoResult = process_video_file(
             video_path=str(video_path),
             run_id=run_id,
             runs_dir=app_settings.runs_dir,
             quality_threshold=app_settings.quality_threshold,
             track_top_k=app_settings.track_top_k,
+            sample_fps=sample_fps,
+            max_frames=max_frames,
+            use_qr=enable_qr if enable_qr is not None else True,
             **flags,
         )
     except Exception as exc:
@@ -153,12 +160,12 @@ async def predict_video(
         save_run(result)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    files = save_run_files(run_id, rows, app_settings.runs_dir)
-    result = RunResult(run_id=run_id, status="ok", rows=rows, files=files)
+    files = save_run_files(run_id, vr.rows, app_settings.runs_dir)
+    result = RunResult(run_id=run_id, status="ok", rows=vr.rows, files=files)
     save_run(result)
 
-    log.info("video.done", run_id=run_id, rows=len(rows))
-    return _make_response(run_id, rows, files)
+    log.info("video.done", run_id=run_id, rows=len(vr.rows))
+    return _make_response(run_id, vr.rows, files, vr.frames_seen, vr.detections_seen)
 
 
 class PathPredictRequest(BaseModel):
@@ -185,21 +192,22 @@ async def predict_path(request: PathPredictRequest) -> dict[str, Any]:
     qt = request.quality_threshold or app_settings.quality_threshold
 
     try:
-        rows = process_video_file(
+        vr: VideoResult = process_video_file(
             video_path=request.video_path,
             run_id=run_id,
             runs_dir=app_settings.runs_dir,
             quality_threshold=qt,
             track_top_k=app_settings.track_top_k,
+            max_frames=request.max_frames,
             **flags,
         )
     except Exception as exc:
         log.error("path.failed", run_id=run_id, error=str(exc))
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    files = save_run_files(run_id, rows, app_settings.runs_dir)
-    result = RunResult(run_id=run_id, status="ok", rows=rows, files=files)
+    files = save_run_files(run_id, vr.rows, app_settings.runs_dir)
+    result = RunResult(run_id=run_id, status="ok", rows=vr.rows, files=files)
     save_run(result)
 
-    log.info("path.done", run_id=run_id, rows=len(rows))
-    return _make_response(run_id, rows, files)
+    log.info("path.done", run_id=run_id, rows=len(vr.rows))
+    return _make_response(run_id, vr.rows, files, vr.frames_seen, vr.detections_seen)

@@ -1,10 +1,10 @@
 """
 api/pipeline_bridge.py — Wraps pipeline modules for API use.
 
-Two entry points:
+Three entry points:
   load_models(settings)          — call once on startup
   process_single_crop(crop_bgr)  — image endpoint: one crop → 29-field dict
-  process_video_file(...)        — video endpoint: full ByteTrack pipeline
+  process_video_file(...)        — video endpoint: full ByteTrack pipeline → VideoResult
 """
 
 from __future__ import annotations
@@ -115,6 +115,16 @@ def load_models(settings: "MLSettings") -> None:
     _vlm_provider.load()
     log.info("models.vlm_ready")
 
+    # YOLO Stage 1 (price-tag detector for video unlabeled mode)
+    if _HAS_DETECTOR:
+        w1 = settings.weights_stage1 or "models/price_tag_yolo.pt"
+        if Path(w1).exists():
+            log.info("models.load_yolo1", weights=w1)
+            load_detector(w1)
+            log.info("models.yolo1_ready")
+        else:
+            log.warning("models.yolo1_missing", weights=w1)
+
     # YOLO Stage 2 (fragment provider)
     if settings.weights_inside and Path(settings.weights_inside).exists():
         log.info("models.load_yolo2", weights=settings.weights_inside)
@@ -139,9 +149,11 @@ def load_models(settings: "MLSettings") -> None:
 
 
 def model_status() -> dict[str, bool]:
+    from pipeline.detector import _model as _det_model
     return {
         "vlm": _vlm_provider is not None,
         "ocr": _ocr_model is not None,
+        "yolo1": _det_model is not None,
         "yolo2": not isinstance(_fragment_provider, type(heuristic_provider)),
         "wechat": _wechat is not None,
     }
@@ -259,7 +271,10 @@ def process_single_crop(
 
     vlm_result: dict[str, str] = {}
     if use_vlm and _vlm_provider is not None:
-        vlm_result = _vlm_provider.extract_fields(crop_bgr)
+        try:
+            vlm_result = _vlm_provider.extract_fields(crop_bgr)
+        except Exception as exc:
+            log.error("vlm.call.failed", error=str(exc))
         log.info("crop.vlm_done", fields_found=sum(1 for v in vlm_result.values() if v))
 
     ocr_fields: dict[str, str] = {}
@@ -283,6 +298,13 @@ class _CropCandidate:
     det: Any
 
 
+@dataclass
+class VideoResult:
+    rows: list[dict[str, str]]
+    frames_seen: int
+    detections_seen: int
+
+
 def process_video_file(
     video_path: str,
     run_id: str,
@@ -291,15 +313,18 @@ def process_video_file(
     track_top_k: int = 3,
     use_vlm: bool = True,
     use_ocr: bool = True,
+    use_qr: bool = True,
     conf_det: float = 0.25,
     device: str | None = None,
     tracker: str = _DEFAULT_TRACKER,
-) -> list[dict[str, str]]:
+    sample_fps: float | None = None,
+    max_frames: int = 0,
+) -> VideoResult:
     """
     Run full unlabeled video pipeline: ByteTrack → top-K crops → VLM + OCR.
 
-    Returns list of output rows (one per unique track). Caller is responsible
-    for writing CSV and debug files to runs_dir/run_id/.
+    Returns VideoResult with rows (one per unique track), frames_seen, detections_seen.
+    Caller is responsible for writing CSV and debug files to runs_dir/run_id/.
     """
     log = structlog.get_logger("bridge").bind(run_id=run_id)
 
@@ -307,28 +332,41 @@ def process_video_file(
         raise RuntimeError("ultralytics not installed — cannot process video")
 
     video_name = Path(video_path).name
-    log.info("video.start", path=video_path)
+    log.info("video.start", path=video_path, sample_fps=sample_fps, max_frames=max_frames)
 
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise RuntimeError(f"Cannot open video: {video_path}")
 
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
-    log.info("video.opened", frames=total_frames)
+    video_fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+    frame_step = max(1, round(video_fps / sample_fps)) if sample_fps else 1
+    log.info("video.opened", frames=total_frames, video_fps=video_fps, frame_step=frame_step)
 
     track_candidates: dict[int, list[_CropCandidate]] = defaultdict(list)
     frame_idx = 0
+    processed_frames = 0
+    total_detections = 0
 
     while True:
         ok, raw = cap.read()
         if not ok:
             break
+
+        if frame_idx % frame_step != 0:
+            frame_idx += 1
+            continue
+
+        if max_frames > 0 and processed_frames >= max_frames:
+            break
+
         frame = rotate_frame(raw)
         ts_ms = cap.get(cv2.CAP_PROP_POS_MSEC)
 
         detections = track_price_tags(
             frame, conf=conf_det, device=device, tracker=tracker
         )
+        total_detections += len(detections)
 
         for det in detections:
             if det.track_id is None:
@@ -344,16 +382,23 @@ def process_video_file(
                 del bucket[track_top_k:]
 
         frame_idx += 1
-        if frame_idx % 100 == 0:
+        processed_frames += 1
+        if processed_frames % 100 == 0:
             log.info(
                 "video.progress",
                 frame=frame_idx,
+                processed=processed_frames,
                 total=total_frames,
                 tracks=len(track_candidates),
             )
 
     cap.release()
-    log.info("video.tracking_done", unique_tracks=len(track_candidates))
+    log.info(
+        "video.tracking_done",
+        unique_tracks=len(track_candidates),
+        frames_seen=processed_frames,
+        detections_seen=total_detections,
+    )
 
     output_rows: list[dict[str, str]] = []
 
@@ -376,7 +421,9 @@ def process_video_file(
             ts=f"{best.ts_ms:.0f}ms",
         )
 
-        qr_payloads, barcode_str = _decode_price_tag(best.crop, _fragment_provider)
+        qr_payloads, barcode_str = (
+            _decode_price_tag(best.crop, _fragment_provider) if use_qr else ([], "")
+        )
         if qr_payloads:
             log.info(
                 "track.qr_ok", track_id=track_id, fields=list(qr_payloads[0].keys())
@@ -384,7 +431,10 @@ def process_video_file(
 
         vlm_result: dict[str, str] = {}
         if use_vlm and _vlm_provider is not None:
-            vlm_result = _vlm_provider.extract_fields(best.crop)
+            try:
+                vlm_result = _vlm_provider.extract_fields(best.crop)
+            except Exception as exc:
+                log.error("vlm.call.failed", track_id=track_id, error=str(exc))
             log.info(
                 "track.vlm_done",
                 track_id=track_id,
@@ -414,7 +464,11 @@ def process_video_file(
         output_rows.append(out_row)
 
     log.info("video.done", rows=len(output_rows))
-    return output_rows
+    return VideoResult(
+        rows=output_rows,
+        frames_seen=processed_frames,
+        detections_seen=total_detections,
+    )
 
 
 def save_run_files(

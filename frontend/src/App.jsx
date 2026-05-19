@@ -61,7 +61,7 @@ function isImageFile(file) {
 export default function App() {
   const [backendUrl, setBackendUrl] = useState(DEFAULT_BACKEND_URL);
   const [mediaFile, setMediaFile] = useState(null);
-  const [mode, setMode] = useState("cpu_safe");
+  const [mode, setMode] = useState("accurate");
   const [overrideSampleFps, setOverrideSampleFps] = useState(true);
   const [sampleFps, setSampleFps] = useState("2.0");
   const [maxFrames, setMaxFrames] = useState("0");
@@ -80,7 +80,7 @@ export default function App() {
       return { rows: "-", framesSeen: "-", detectionsSeen: "-" };
     }
     return {
-      rows: result.rows ?? "-",
+      rows: result.row_count ?? "-",
       framesSeen: result.frames_seen ?? "-",
       detectionsSeen: result.detections_seen ?? "-",
     };
@@ -147,7 +147,7 @@ export default function App() {
 
       const body = await response.json();
       setResult(body);
-      setStatus(`Done. Rows: ${body.rows ?? "n/a"}`);
+      setStatus(`Done. Rows: ${body.row_count ?? "n/a"}`);
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : "Unexpected error";
       setStatus("Failed");

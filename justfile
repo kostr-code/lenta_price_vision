@@ -8,8 +8,8 @@ ml host="0.0.0.0" port="8000":
     HOST={{host}} PORT={{port}} uv run python ml_server.py
 
 # Запустить gateway (port 8001) — проксирует запросы на ML
-gw host="0.0.0.0" port="8001":
-    HOST={{host}} PORT={{port}} uv run python mock_api_backend.py
+gw host="0.0.0.0" port="8001" ml_url="http://localhost:8000":
+    HOST={{host}} PORT={{port}} ML_URL={{ml_url}} uv run python mock_api_backend.py
 
 # Тест health endpoint
 health:

@@ -36,12 +36,16 @@ from __future__ import annotations
 import json
 import re
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 import cv2
 import numpy as np
+import structlog
+
+log = structlog.get_logger("vlm")
 
 
 # ── Provider protocol ──────────────────────────────────────────────────────────
@@ -71,22 +75,27 @@ class VLMProvider(Protocol):
         ...
 
 
-# ── Fields any VLM implementation should try to return ───────────────────────
+# ── Fields the VLM prompt asks for ───────────────────────────────────────────
+# Keep in sync with prompts/qwen_extract.md
 
 VLM_FIELDS = [
     "product_name",
     "price_card",
     "price_default",
-    "price_discount",
-    "discount_amount",
-    "barcode",
-    "id_sku",
-    "print_datetime",
-    "code",
-    "color",
-    "special_symbols",
+    "discount_percent",   # mapped → discount_amount in CSV
     "additional_info",
+    # "qr_code" — presence indicator only, not a CSV column, intentionally omitted
 ]
+
+# Mapping: VLM prompt field name → OUTPUT_COLUMNS CSV name.
+# Update this dict whenever prompts/qwen_extract.md field names change.
+VLM_TO_CSV_MAP: dict[str, str] = {
+    "product_name":     "product_name",
+    "price_card":       "price_card",
+    "price_default":    "price_default",
+    "discount_percent": "discount_amount",
+    "additional_info":  "additional_info",
+}
 
 
 # ── Default extraction prompt for Qwen2.5-VL ─────────────────────────────────
@@ -129,6 +138,10 @@ class VLMConfig:
     max_pixels: int = 1024 * 28 * 28
     # Maximum tokens to generate per inference call
     max_new_tokens: int = 512
+    # Path to .md file containing the extraction prompt.
+    # If set and file exists, overrides the default _PROMPT at load() time.
+    # Edit the file and restart the service to apply changes.
+    prompt_file: str = "prompts/qwen_extract.md"
 
 
 # ── Qwen2.5-VL provider ───────────────────────────────────────────────────────
@@ -171,10 +184,16 @@ class Qwen25VLProvider:
         from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
         cfg = self._config
-        print(
-            f"[vlm] Загрузка {cfg.model_id}"
-            f"  4bit={cfg.load_in_4bit}  device={cfg.device_map}"
-        )
+        if cfg.prompt_file:
+            p = Path(cfg.prompt_file)
+            if p.exists():
+                self._prompt = p.read_text(encoding="utf-8").strip()
+                log.info("vlm.prompt.loaded", file=str(p), chars=len(self._prompt))
+            else:
+                log.warning("vlm.prompt.file_missing", file=str(p), fallback="built-in prompt")
+
+        log.info("vlm.load.start", model=cfg.model_id, four_bit=cfg.load_in_4bit, device=cfg.device_map)
+        t0 = time.perf_counter()
 
         load_kw: dict[str, Any] = {"device_map": cfg.device_map}
         if cfg.load_in_4bit:
@@ -194,17 +213,40 @@ class Qwen25VLProvider:
         )
 
         allocated = torch.cuda.memory_allocated() / 1e9
-        print(f"[vlm] Загружено. VRAM: {allocated:.2f} GB")
+        log.info("vlm.load.done", model=cfg.model_id, vram_gb=round(allocated, 2), elapsed_s=round(time.perf_counter() - t0, 1))
 
     def extract_fields(self, crop_bgr: np.ndarray) -> dict[str, str]:
-        """Run Qwen2.5-VL on a price tag crop and return extracted fields."""
+        """Run Qwen2.5-VL on a price tag crop and return extracted fields.
+
+        Return keys are always CSV column names (via VLM_TO_CSV_MAP),
+        so the result can be merged directly with OCR output.
+        """
         self.load()
+        h, w = crop_bgr.shape[:2]
+        log.info("vlm.infer.start", h=h, w=w)
         tmp_path = _bgr_to_tmp_jpg(crop_bgr)
         try:
             raw = self._run_qwen(tmp_path)
+            log.debug("vlm.infer.raw", text=raw[:400])
+        except Exception as exc:
+            log.error("vlm.infer.failed", error=str(exc))
+            return {}
         finally:
             Path(tmp_path).unlink(missing_ok=True)
-        return _parse_json_response(raw)
+
+        parsed = _parse_json_response(raw)
+
+        # Rename VLM field names → CSV column names via VLM_TO_CSV_MAP.
+        # Fields not in the map (e.g. qr_code presence indicator) are discarded.
+        result: dict[str, str] = {}
+        for vlm_key, csv_key in VLM_TO_CSV_MAP.items():
+            val = parsed.get(vlm_key, "")
+            if val:
+                result[csv_key] = val
+
+        filled = {k: v for k, v in result.items() if v}
+        log.info("vlm.infer.done", fields_found=len(filled), values=filled)
+        return result
 
     # ── Internal helpers ──
 
@@ -234,17 +276,22 @@ class Qwen25VLProvider:
             return_tensors="pt",
         ).to("cuda")
 
+        log.info("vlm.generate.start", max_new_tokens=self._config.max_new_tokens)
+        t0 = time.perf_counter()
         with torch.no_grad():
             out = self._model.generate(
                 **inputs,
                 max_new_tokens=self._config.max_new_tokens,
                 do_sample=False,
             )
+        elapsed = time.perf_counter() - t0
 
         generated = out[:, inputs.input_ids.shape[1] :]
-        return self._processor.batch_decode(
+        decoded = self._processor.batch_decode(
             generated, skip_special_tokens=True, clean_up_tokenization_spaces=False
         )[0]
+        log.info("vlm.generate.done", elapsed_s=round(elapsed, 1), out_tokens=generated.shape[1])
+        return decoded
 
 
 # ── Shared helpers (model-agnostic) ──────────────────────────────────────────
@@ -257,27 +304,100 @@ def _bgr_to_tmp_jpg(crop_bgr: np.ndarray) -> str:
     return tmp.name
 
 
+def _extract_json_object(text: str) -> str | None:
+    """Find the first complete JSON object by tracking brace depth.
+
+    Unlike a regex, this correctly handles nested objects and braces
+    inside string values.
+    """
+    start = text.find("{")
+    if start == -1:
+        return None
+    depth = 0
+    in_string = False
+    escape = False
+    for i, ch in enumerate(text[start:], start):
+        if escape:
+            escape = False
+            continue
+        if ch == "\\" and in_string:
+            escape = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    return None
+
+
+def _sanitize_json(text: str) -> str:
+    """Remove trailing commas before } or ] — common LLM output error."""
+    return re.sub(r",\s*([}\]])", r"\1", text)
+
+
 def _parse_json_response(raw: str) -> dict[str, str]:
-    """Strip <think> blocks, extract JSON, map nulls to empty strings."""
+    """Extract a JSON object from raw VLM output and normalise values.
+
+    Handles:
+    - <think>...</think> preamble (Qwen reasoning mode)
+    - Markdown code fences (```json ... ```)
+    - Surrounding text before/after the JSON object
+    - Nested objects (brace-depth extraction, not regex)
+    - Trailing commas
+    - Array values → joined string
+    - Nested dict values → JSON string (preserves data)
+    - Partial responses (fewer fields than expected) — returned as-is
+    """
+    # 1. strip <think> block
     if "</think>" in raw:
         raw = raw.split("</think>", 1)[1]
     raw = raw.strip()
 
+    # 2. strip markdown fences
     raw = re.sub(r"^```(?:json)?\s*", "", raw)
     raw = re.sub(r"\s*```$", "", raw)
 
-    match = re.search(r"\{[\s\S]*?\}", raw)
-    if not match:
-        return {}
-    try:
-        parsed = json.loads(match.group())
-    except json.JSONDecodeError:
+    # 3. extract first complete JSON object (brace-depth aware)
+    json_str = _extract_json_object(raw)
+    if not json_str:
+        log.warning("vlm.parse.no_json", raw_preview=raw[:300])
         return {}
 
+    # 4. fix trailing commas
+    json_str = _sanitize_json(json_str)
+
+    # 5. parse
+    try:
+        parsed = json.loads(json_str)
+    except json.JSONDecodeError as exc:
+        log.warning("vlm.parse.json_error", error=str(exc), raw_preview=json_str[:300])
+        return {}
+
+    if not isinstance(parsed, dict):
+        log.warning("vlm.parse.not_object", got_type=type(parsed).__name__)
+        return {}
+
+    # 6. normalise values to str
     result: dict[str, str] = {}
     for k, v in parsed.items():
-        if v is None or str(v).lower() in ("null", "none", ""):
+        if v is None or str(v).lower() in ("null", "none"):
             result[k] = ""
+        elif isinstance(v, list):
+            # e.g. additional_info: ["Хит продаж", "Новинка"] → "Хит продаж; Новинка"
+            result[k] = "; ".join(str(x).strip() for x in v if x)
+        elif isinstance(v, dict):
+            # nested object — serialise rather than lose the data
+            result[k] = json.dumps(v, ensure_ascii=False)
         else:
-            result[k] = str(v).strip()
+            s = str(v).strip()
+            result[k] = "" if s.lower() in ("null", "none", "") else s
+
+    log.debug("vlm.parse.ok", keys=list(result.keys()))
     return result

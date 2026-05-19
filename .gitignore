@@ -18,3 +18,5 @@ models/
 *.pt
 *.onnx
 *.mp4
+
+wechat_models/

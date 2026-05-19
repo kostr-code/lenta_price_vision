@@ -329,7 +329,7 @@ def extract_error_detail(response: httpx.Response, expect_json: bool) -> str:
 def run() -> None:
     host = os.getenv("HOST", "0.0.0.0")
     port = int(os.getenv("PORT", "8001"))
-    uvicorn.run("backend.main:app", host=host, port=port)
+    uvicorn.run(app, host=host, port=port)
 
 
 if __name__ == "__main__":
