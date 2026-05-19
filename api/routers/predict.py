@@ -40,8 +40,9 @@ def _make_response(
     files: dict,
     frames_seen: int = 0,
     detections_seen: int = 0,
+    annotated_video: str | None = None,
 ) -> dict[str, Any]:
-    return {
+    resp: dict[str, Any] = {
         "run_id": run_id,
         "status": "ok",
         "rows": rows,
@@ -51,6 +52,9 @@ def _make_response(
         "download": f"/download/{run_id}/output.csv",
         "debug_download": f"/download/{run_id}/debug.json",
     }
+    if annotated_video:
+        resp["annotated_video"] = annotated_video
+    return resp
 
 
 @router.post("/predict/image")
@@ -174,7 +178,7 @@ async def predict_video(
     save_run(result)
 
     log.info("video.done", run_id=run_id, rows=len(vr.rows))
-    return _make_response(run_id, vr.rows, files, vr.frames_seen, vr.detections_seen)
+    return _make_response(run_id, vr.rows, files, vr.frames_seen, vr.detections_seen, vr.annotated_video)
 
 
 class PathPredictRequest(BaseModel):

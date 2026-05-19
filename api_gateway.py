@@ -14,8 +14,8 @@ from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-class BackendSettings(BaseSettings):
-    """Runtime configuration for the backend API gateway."""
+class GatewaySettings(BaseSettings):
+    """Runtime configuration for the API gateway."""
 
     ml_url: str = Field(default_factory=lambda: os.getenv("ML_URL", "http://ml:8000"))
     request_timeout_sec: float = 600.0
@@ -31,7 +31,7 @@ class BackendSettings(BaseSettings):
     )
 
 
-settings = BackendSettings()
+settings = GatewaySettings()
 UPLOAD_FILE = File(...)
 FORM_MODE = Form("cpu_safe")
 FORM_SAMPLE_FPS = Form(None)
@@ -53,7 +53,7 @@ def parse_origins(value: str) -> list[str]:
     return [item for item in parts if item]
 
 
-app = FastAPI(title="Price Tag Audit Backend")
+app = FastAPI(title="Price Tag Audit Gateway")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=parse_origins(settings.cors_origins),
@@ -86,7 +86,7 @@ async def health() -> dict[str, Any]:
     upstream = await check_ml_health()
     return {
         "status": "ok",
-        "service": "backend",
+        "service": "gateway",
         "ml": upstream,
     }
 
@@ -261,6 +261,7 @@ def parse_download_parts(value: str | None) -> DownloadParts | None:
 
 
 def enrich_with_backend_downloads(body: dict[str, Any]) -> None:
+    """Rewrite all ML-service /download/... paths to gateway /api/v1/download/... paths."""
     download = parse_download_parts(str(body.get("download", "")))
     if download is not None:
         body["backend_download"] = f"/api/v1/download/{download.run_id}/{download.filename}"
@@ -268,6 +269,19 @@ def enrich_with_backend_downloads(body: dict[str, Any]) -> None:
     debug = parse_download_parts(str(body.get("debug_download", "")))
     if debug is not None:
         body["backend_debug_download"] = f"/api/v1/download/{debug.run_id}/{debug.filename}"
+
+    annotated = parse_download_parts(str(body.get("annotated_video", "")))
+    if annotated is not None:
+        body["backend_annotated_video"] = (
+            f"/api/v1/download/{annotated.run_id}/{annotated.filename}"
+        )
+
+    # Rewrite _crop_url in each row so frontend fetches through this gateway
+    for row in body.get("rows", []):
+        if isinstance(row, dict) and row.get("_crop_url"):
+            parts = parse_download_parts(str(row["_crop_url"]))
+            if parts is not None:
+                row["_crop_url"] = f"/api/v1/download/{parts.run_id}/{parts.filename}"
 
 
 async def check_ml_health() -> dict[str, Any]:

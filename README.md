@@ -9,7 +9,7 @@
         │  POST /api/v1/predict/video
         │  POST /api/v1/predict/image
         ▼
-[Gateway :8001]  mock_api_backend.py
+[Gateway :8001]  api_gateway.py
         │  принимает файлы, проксирует на ML,
         │  обогащает ответ: download → backend_download
         ▼
@@ -19,7 +19,7 @@
 [pipeline/]  — переиспользуемые модули
 ```
 
-**Gateway** (`mock_api_backend.py`) — stateless прокси. Принимает загрузки от фронта,
+**Gateway** (`api_gateway.py`) — stateless прокси. Принимает загрузки от фронта,
 пересылает на ML, добавляет `backend_download` / `backend_debug_download` URL.
 
 **ML Service** (`ml_server.py` + `api/`) — держит модели в памяти, запускает inference.
@@ -109,7 +109,7 @@ cd frontend && npm install && npm run dev   # :5173
 ```
 sol_main/
   ml_server.py              — uvicorn entry point
-  mock_api_backend.py       — gateway proxy
+  api_gateway.py       — gateway proxy
   api/
     ml_app.py               — FastAPI app + lifespan
     config.py               — MLSettings из env

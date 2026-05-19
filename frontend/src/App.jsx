@@ -323,6 +323,18 @@ export default function App() {
           </section>
         </form>
 
+        {result?.backend_annotated_video && (
+          <section className="panel full-width" style={{ marginTop: "14px" }}>
+            <h2>Tracking — лучшие кадры</h2>
+            <video
+              controls
+              preload="metadata"
+              style={{ maxWidth: "100%", borderRadius: "8px", display: "block" }}
+              src={resolveDownloadUrl(backendUrl, result.backend_annotated_video)}
+            />
+          </section>
+        )}
+
         {cropRows.length > 0 && (
           <section className="panel full-width" style={{ marginTop: "14px" }}>
             <h2>Распознанные ценники</h2>

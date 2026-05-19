@@ -303,6 +303,89 @@ class VideoResult:
     rows: list[dict[str, str]]
     frames_seen: int
     detections_seen: int
+    annotated_video: str | None = None
+
+
+def _reencode_h264(mp4_path: Path) -> None:
+    """Re-encode with ffmpeg to H.264 + faststart for browser playback."""
+    import subprocess
+
+    tmp = mp4_path.with_suffix(".tmp.mp4")
+    try:
+        r = subprocess.run(
+            [
+                "ffmpeg", "-y", "-i", str(mp4_path),
+                "-c:v", "libx264", "-preset", "fast",
+                "-movflags", "+faststart", str(tmp),
+            ],
+            capture_output=True,
+            timeout=120,
+        )
+        if r.returncode == 0 and tmp.exists():
+            tmp.rename(mp4_path)
+    except Exception:
+        pass
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+
+
+def _write_annotated_video(
+    video_path: str,
+    best_by_track: dict[int, "_CropCandidate"],
+    run_dir: Path,
+    run_id: str,
+) -> str | None:
+    """Highlight-reel: one annotated best-frame per track at 2 fps. Returns ML-service URL or None."""
+    if not best_by_track:
+        return None
+
+    out_path = run_dir / "annotated.mp4"
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        return None
+
+    log = structlog.get_logger("bridge")
+    writer = None
+
+    for track_id, cand in sorted(best_by_track.items()):
+        cap.set(cv2.CAP_PROP_POS_MSEC, cand.ts_ms)
+        ok, raw = cap.read()
+        if not ok:
+            continue
+        frame = rotate_frame(raw)
+
+        h, w = frame.shape[:2]
+        if w > 1280:
+            scale = 1280 / w
+            frame = cv2.resize(frame, (1280, int(h * scale)))
+        else:
+            scale = 1.0
+
+        x1 = int(cand.det.x1 * scale)
+        y1 = int(cand.det.y1 * scale)
+        x2 = int(cand.det.x2 * scale)
+        y2 = int(cand.det.y2 * scale)
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 220, 80), 3)
+        label = f"Track {track_id}  q={cand.score:.2f}"
+        cv2.putText(frame, label, (x1, max(y1 - 8, 20)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 220, 80), 2)
+
+        if writer is None:
+            fh, fw = frame.shape[:2]
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+            writer = cv2.VideoWriter(str(out_path), fourcc, 2, (fw, fh))
+
+        if writer and writer.isOpened():
+            writer.write(frame)
+
+    cap.release()
+    if writer:
+        writer.release()
+
+    _reencode_h264(out_path)
+    log.info("annotated_video.written", path=str(out_path), tracks=len(best_by_track))
+    return f"/download/{run_id}/annotated.mp4" if out_path.exists() else None
 
 
 def process_video_file(
@@ -400,34 +483,32 @@ def process_video_file(
         detections_seen=total_detections,
     )
 
-    output_rows: list[dict[str, str]] = []
-
+    # Phase 2: select best crop per track + write annotated highlight video
+    best_by_track: dict[int, _CropCandidate] = {}
     for track_id, candidates in sorted(track_candidates.items()):
         best = max(candidates, key=lambda c: c.score)
-
         if best.score < quality_threshold:
-            log.info(
-                "track.skip",
-                track_id=track_id,
-                score=f"{best.score:.3f}",
-                reason="low_quality",
-            )
-            continue
+            log.info("track.skip", track_id=track_id, score=f"{best.score:.3f}", reason="low_quality")
+        else:
+            best_by_track[track_id] = best
 
-        log.info(
-            "track.process",
-            track_id=track_id,
-            score=f"{best.score:.3f}",
-            ts=f"{best.ts_ms:.0f}ms",
-        )
+    run_dir = Path(runs_dir) / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    annotated_url = _write_annotated_video(video_path, best_by_track, run_dir, run_id)
+
+    # Phase 3: VLM + OCR on each best crop
+    output_rows: list[dict[str, str]] = []
+    crops_dir = run_dir / "crops"
+    crops_dir.mkdir(exist_ok=True)
+
+    for track_id, best in best_by_track.items():
+        log.info("track.process", track_id=track_id, score=f"{best.score:.3f}", ts=f"{best.ts_ms:.0f}ms")
 
         qr_payloads, barcode_str = (
             _decode_price_tag(best.crop, _fragment_provider) if use_qr else ([], "")
         )
         if qr_payloads:
-            log.info(
-                "track.qr_ok", track_id=track_id, fields=list(qr_payloads[0].keys())
-            )
+            log.info("track.qr_ok", track_id=track_id, fields=list(qr_payloads[0].keys()))
 
         vlm_result: dict[str, str] = {}
         if use_vlm and _vlm_provider is not None:
@@ -435,20 +516,12 @@ def process_video_file(
                 vlm_result = _vlm_provider.extract_fields(best.crop)
             except Exception as exc:
                 log.error("vlm.call.failed", track_id=track_id, error=str(exc))
-            log.info(
-                "track.vlm_done",
-                track_id=track_id,
-                fields=sum(1 for v in vlm_result.values() if v),
-            )
+            log.info("track.vlm_done", track_id=track_id, fields=sum(1 for v in vlm_result.values() if v))
 
         ocr_fields: dict[str, str] = {}
         if use_ocr:
             ocr_fields = _run_ocr(best.crop, qr_payloads)
-            log.info(
-                "track.ocr_done",
-                track_id=track_id,
-                fields=sum(1 for v in ocr_fields.values() if v),
-            )
+            log.info("track.ocr_done", track_id=track_id, fields=sum(1 for v in ocr_fields.values() if v))
 
         combined = _merge_vlm_and_ocr(vlm_result, ocr_fields)
         out_row = make_empty_row()
@@ -462,8 +535,6 @@ def process_video_file(
         _fill_output_row(out_row, combined, qr_payloads, barcode_str, best.score)
         out_row["_track_id"] = str(track_id)
 
-        crops_dir = Path(runs_dir) / run_id / "crops"
-        crops_dir.mkdir(parents=True, exist_ok=True)
         crop_filename = f"track_{track_id}.jpg"
         cv2.imwrite(str(crops_dir / crop_filename), best.crop, [cv2.IMWRITE_JPEG_QUALITY, 90])
         out_row["_crop_url"] = f"/download/{run_id}/crops/{crop_filename}"
@@ -475,6 +546,7 @@ def process_video_file(
         rows=output_rows,
         frames_seen=processed_frames,
         detections_seen=total_detections,
+        annotated_video=annotated_url,
     )
 
 
