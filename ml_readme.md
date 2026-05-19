@@ -1,6 +1,6 @@
 # sol_main — Production Pipeline
 
-Путь: `video + labeled CSV → VLM/OCR → 29-field CSV`.
+Путь: `video + labeled CSV -> VLM/OCR -> 29-field CSV`.
 
 Решение работает локально, без cloud API. Две независимые части:
 - **Inference pipeline** (`main.py` + `pipeline/`) — распознавание ценников через Qwen2.5-VL + PaddleOCR
@@ -12,7 +12,7 @@
 
 ```text
 sol_main/
-  main.py              # CLI: video + labeled CSV → recognized CSV
+  main.py              # CLI: video + labeled CSV -> recognized CSV
   pipeline/
     video.py           # VideoCapture, find_best_frame, cut_crop, rotate CCW
     parsers.py         # parse_fields, merge_field_values, OUTPUT_COLUMNS (29 полей)
@@ -23,11 +23,11 @@ sol_main/
   ml/
     training.py        # build_yolo_dataset: BBox, iter_tiles, full/tiled frames
   scripts/
-    build_dataset.py   # CLI: labeled CSV/video → YOLO dataset + template propagation
+    build_dataset.py   # CLI: labeled CSV/video -> YOLO dataset + template propagation
     preview_dataset.py # HTML-галерея с bbox поверх тайлов (проверка разметки)
-    crop_detections.py # Прогнать YOLO → сохранить кропы ценников (для Stage 2)
+    crop_detections.py # Прогнать YOLO -> сохранить кропы ценников (для Stage 2)
     dedupe_predictions.py     # IoU NMS деdup predictions перед импортом в CVAT
-    prepare_cvat_dataset.py   # CVAT YOLO export → финальный YOLO датасет
+    prepare_cvat_dataset.py   # CVAT YOLO export -> финальный YOLO датасет
   train/
     train_yolo1.sh     # Stage 1: детектор ценников (price_tag)
     train_yolo2.sh     # Stage 2: внутренние элементы (barcode, qr, price zones...)
@@ -83,18 +83,18 @@ uv run python main.py \
 Pipeline внутри:
 
 ```text
-load_df (CSV) → find_best_frame (+-scan) → cut_crop_from_row
-→ estimate_crop_quality (h264 + FFT)
-→ extract_fields_vlm (Qwen2.5-VL → JSON → 12 полей)
-→ [опционально] ocr_zoned (PaddleOCR → parse_fields → остаток полей)
-→ merge + normalize → save CSV (29 полей + _quality)
+load_df (CSV) -> find_best_frame (+-scan) -> cut_crop_from_row
+-> estimate_crop_quality (h264 + FFT)
+-> extract_fields_vlm (Qwen2.5-VL -> JSON -> 12 полей)
+-> [опционально] ocr_zoned (PaddleOCR -> parse_fields -> остаток полей)
+-> merge + normalize -> save CSV (29 полей + _quality)
 ```
 
 Метрики качества кропа (`pipeline/quality.py`):
 
 ```text
-h264_artifact_score   ratio DCT-boundary / interior gradients; >1.5 → блочные артефакты
-hf_ratio              FFT HF energy fraction; <0.3 → слишком размыто для OCR
+h264_artifact_score   ratio DCT-boundary / interior gradients; >1.5 -> блочные артефакты
+hf_ratio              FFT HF energy fraction; <0.3 -> слишком размыто для OCR
 estimate_crop_quality  composite [0,1] = 0.4*lap_norm + 0.4*hf_norm - 0.2*artifact_penalty
 ```
 
@@ -160,7 +160,7 @@ uv run python scripts/preview_dataset.py \
     --out-dir runs/preview_train
 ```
 
-Открыть `runs/preview_train/index.html`. Если bbox плывут → повысить
+Открыть `runs/preview_train/index.html`. Если bbox плывут -> повысить
 `--match-threshold` до `0.72` или убрать `--propagate 0`.
 
 ### Шаг 3. Обучить
@@ -195,7 +195,7 @@ runs/detect/price_tag_yolo/weights/best.pt
 
 ```bash
 just save-yolo1
-# → models/price_tag_yolo.pt
+# -> models/price_tag_yolo.pt
 ```
 
 ---
@@ -286,7 +286,7 @@ batch     4
 
 ```bash
 just save-yolo2
-# → models/inside_price_tag_yolo.pt
+# -> models/inside_price_tag_yolo.pt
 ```
 
 ---
@@ -298,12 +298,12 @@ just dataset-build        Собрать tiled датасет (prop=8)
 just dataset-build-full   То же, но полные кадры без тайлов
 just dataset-preview      HTML-галерея разметки train split
 just train-yolo1          Обучить Stage 1
-just save-yolo1           Скопировать best.pt → models/price_tag_yolo.pt
+just save-yolo1           Скопировать best.pt -> models/price_tag_yolo.pt
 just crop-for-stage2      Кропы ценников для разметки Stage 2
-just prepare-cvat         CVAT export → YOLO датасет
+just prepare-cvat         CVAT export -> YOLO датасет
 just train-yolo2          Обучить Stage 2
-just save-yolo2           Скопировать best.pt → models/inside_price_tag_yolo.pt
-just yolo1-full           Весь Stage 1 одной командой (build→preview→train)
+just save-yolo2           Скопировать best.pt -> models/inside_price_tag_yolo.pt
+just yolo1-full           Весь Stage 1 одной командой (build->preview->train)
 just qwen-debug [path]    Прогнать Qwen-VL на картинках для отладки
 ```
 
@@ -378,36 +378,11 @@ action_price_qr, action_code_qr
 Следующие вещи не реализованы или требуют уточнения:
 
 ```text
-[ ] Stage 1 base model
-    train/train_yolo1.sh использует yolo26n.pt по умолчанию.
-    Прежний скрипт коллеги (yolo1-train.sh) использовал yolo11n.pt.
-    Уточни что брать базой — или задай переменную:
-    YOLO1_BASE_MODEL=yolo26n.pt just train-yolo1
 
 [ ] Stage 2 классы внутренних элементов
     train/train_yolo2.sh готов, но нужен датасет.
     Какие классы детектируем внутри ценника?
     (barcode_strip, qr_zone, price_card_zone, price_default_zone, ...)
-
-[ ] Stage 2 датасет
-    Есть ли уже готовая разметка inside-элементов?
-    Где она лежит (CVAT export, YOLO labels, другой формат)?
-
-[ ] CVAT export формат
-    scripts/prepare_cvat_dataset.py поддерживает стандартный YOLO export
-    и специальный "image-root" layout.
-    Если у коллеги другой формат экспорта — сообщи, добавим парсер.
-
-[ ] inside псевдолейблер
-    В how_to_yolo.md упоминается scripts/analyze_inside_on_crops_rot90ccw.py
-    (прогнать inside-модель по crops → YOLO labels для CVAT).
-    Не реализовано: нет inside-модели для старта псевдолейблинга.
-    После первой ручной разметки + Stage 2 тренировки — можно добавить.
-
-[ ] Inference pipeline с YOLO детектором
-    main.py сейчас работает только в labeled-data режиме (GT CSV → bbox).
-    Для unlabeled видео нужно подключить Stage 1 детектор вместо GT bbox.
-    Скелет: load_vlm → VideoCapture → YOLO detect → cut_crop → VLM → CSV.
 
 [ ] ByteTrack трекинг для непрерывного видео
     43_15 и другие датасеты с остановками робота работают без трекинга.
